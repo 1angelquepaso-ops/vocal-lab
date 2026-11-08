@@ -12,3 +12,4 @@ ab/
 build/
 dist/
 *.spec
+!pirata/piano/*.flac

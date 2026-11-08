@@ -1,0 +1,6 @@
+Salamander Grand Piano V3 by Alexander Holm
+https://archive.org/details/SalamanderGrandPianoV3
+SFZ remap: https://github.com/sfzinstruments/SalamanderGrandPiano
+Licensed under Creative Commons Attribution 3.0 Unported
+http://creativecommons.org/licenses/by/3.0/
+Changes: 4 of 16 velocity layers (v5, v9, v12, v15), trimmed to 7 s with a fade, 16-bit.

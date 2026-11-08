@@ -1,0 +1,75 @@
+name: Build PIRATA
+
+on:
+  push:
+    branches: [main]
+    paths: ['pirata/**', 'pirata_plugin/**', 'packaging/pirata_main.py',
+            'packaging/make_pirata_test.py', '.github/workflows/pirata.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Engine dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy librosa soundfile soxr mido onnxruntime pyinstaller
+
+      - name: Build engine (pirata-engine.exe)
+        run: >
+          pyinstaller --noconfirm --onedir --console --name pirata-engine
+          --paths . --collect-all librosa --collect-all soundfile --collect-all soxr
+          --collect-all onnxruntime --hidden-import pirata.cli --hidden-import mido.backends
+          --add-data "pirata/nmp.onnx;pirata"
+          --add-data "pirata/piano;pirata/piano"
+          --add-data "pirata/BASIC_PITCH_LICENSE.txt;pirata"
+          packaging/pirata_main.py
+
+      - name: Smoke-test the engine
+        shell: pwsh
+        run: |
+          python packaging/make_pirata_test.py
+          $e = "dist/pirata-engine/pirata-engine.exe"
+          & $e analyze --session sess --sample pirata_test_90bpm.wav
+          & $e build --session sess --detail rich --mode counter --seed 3 --out out_test
+          & $e build --session sess --detail simple --mode arp --out out_test
+          if (-not (Test-Path sess/preview_melody.wav)) { throw "engine produced no preview" }
+          Get-ChildItem out_test
+
+      - name: Build VST3
+        run: |
+          cmake -S pirata_plugin -B build -A x64
+          cmake --build build --config Release --target Pirata_VST3
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $vst = "build/Pirata_artefacts/Release/VST3/PIRATA.vst3"
+          New-Item -ItemType Directory -Force "$vst/Contents/Resources/engine" | Out-Null
+          Copy-Item -Recurse dist/pirata-engine/* "$vst/Contents/Resources/engine/"
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item -Recurse $vst out/
+          Compress-Archive -Path out/* -DestinationPath PIRATA-Windows.zip -Force
+
+      - name: Publish download (Releases page)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: pirata-latest
+          name: PIRATA (latest build)
+          body: |
+            Download **PIRATA-Windows.zip**, unzip it, and copy the `PIRATA.vst3` folder into
+            `C:\Program Files\Common Files\VST3\`. Rescan plugins in FL Studio.
+            Piano: Salamander Grand Piano V3 by Alexander Holm (CC-BY 3.0).
+            Note transcription model: Spotify basic-pitch (Apache-2.0).
+          files: PIRATA-Windows.zip
+          make_latest: false
