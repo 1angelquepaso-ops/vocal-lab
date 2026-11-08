@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.wav
+*.flac
+*.mp3
+*.npz
+*.npy
+out*/
+mel/
+real/
+ab/
