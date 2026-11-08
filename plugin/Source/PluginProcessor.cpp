@@ -26,7 +26,7 @@ void HarmonizerProcessor::setPreview (juce::AudioBuffer<float>&& mono, double fi
     const juce::SpinLock::ScopedLockType sl (lock);
     preview = std::move (mono);
     previewRate = fileSampleRate;
-    pos = 0.0;
+    pos = juce::jmin (pos, (double) preview.getNumSamples());   // keep the playhead
 }
 
 void HarmonizerProcessor::startPreview()
@@ -37,6 +37,18 @@ void HarmonizerProcessor::startPreview()
 }
 
 void HarmonizerProcessor::stopPreview() { playing = false; }
+
+void HarmonizerProcessor::startPreviewFromHere()
+{
+    const juce::SpinLock::ScopedLockType sl (lock);
+    playing = preview.getNumSamples() > 0;
+}
+
+void HarmonizerProcessor::seek (float fraction)
+{
+    const juce::SpinLock::ScopedLockType sl (lock);
+    pos = juce::jlimit (0.0, 1.0, (double) fraction) * preview.getNumSamples();
+}
 
 float HarmonizerProcessor::previewProgress() const
 {
@@ -62,7 +74,12 @@ void HarmonizerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     for (int i = 0; i < buffer.getNumSamples(); ++i)
     {
         const int i0 = (int) pos;
-        if (i0 + 1 >= n) { playing = false; break; }
+        if (i0 + 1 >= n)
+        {
+            if (loop.load() && n > 1) { pos = 0.0; continue; }
+            playing = false;
+            break;
+        }
         const float frac = (float) (pos - i0);
         const float s = src[i0] + frac * (src[i0 + 1] - src[i0]);
         for (int c = 0; c < chans; ++c)

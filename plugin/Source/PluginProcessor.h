@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_formats/juce_audio_formats.h>
+#include <set>
 
 // The processor passes FL's audio straight through, untouched. Its only job is
 // the preview player: when the user hits Play in the plugin window, the chunk
@@ -38,18 +39,24 @@ public:
     void setPreview (juce::AudioBuffer<float>&& mono, double fileSampleRate);
     void startPreview();
     void stopPreview();
+    void startPreviewFromHere();         // play from wherever the playhead is
+    void seek (float fraction);          // 0..1, keeps playing if it was
     bool isPreviewing() const { return playing.load(); }
     float previewProgress() const;
+    double previewSeconds() const { return previewRate > 0 ? preview.getNumSamples() / previewRate : 0.0; }
+    std::atomic<bool> loop { false };
 
     // Session state lives here so it survives the window being closed
     juce::File sessionDir;
     juce::File vocalFile, beatFile;
-    juce::var options;               // JSON array from the engine
-    int currentOption = 0;
-    std::map<juce::String, bool> muted;   // key: "<option>/<voice>"
-    juce::String status { "Load a dry vocal chunk to start." };
-    int voices = 2;
-    float colour = 0.3f;
+    juce::Array<juce::var> options;  // one engine result object per option
+    int currentOption = -1;
+    std::map<juce::String, bool> muted, soloed;   // key: "<option id>/<voice>"
+    std::set<int> kept;                           // option ids marked with a star
+    juce::String status { "Load a dry vocal chunk (a hook or phrase) to start." };
+    juce::String keyInfo;
+    int voices = 1;
+    int styleIndex = 0;
     bool leadInPreview = true;
 
 private:
