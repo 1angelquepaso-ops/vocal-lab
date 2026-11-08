@@ -33,9 +33,22 @@ Python 3.11+, the packages in `requirements.txt`, and the `rubberband` command-l
 - `vocal_lab/harmonize.py` — command-line harmonizer for the fixed styles
 - `scripts/` — the Orange test runs and the verification script
 
+## Run the app
+
+```
+pip install -r requirements.txt
+python -m vocal_lab.app
+```
+
+It opens in your browser: load the dry vocal (and the beat if you have it), set the
+section, **Analyze**, then **Randomize** for 8 ranked options. Pick one by number to
+**Mutate** it, **Lock** a time range and reroll the rest, or **Export** WAV + MIDI.
+The first Randomize builds the pitch-shift bank (~20 s per 30 s of vocal); after
+that every reroll is instant.
+
 ## Planned
 
 - More modes: call & response, choir stack, dark flavours (Phrygian / harmonic minor), colour tones
-- Randomize: generate candidates, score on theory, lock & reroll, mutate
-- A small window app and a Windows build
+- Windows build (no Python install needed)
+- Call & response and choir stack inside the app
 - Vocal aligner (doubles), voice-clone re-singing
