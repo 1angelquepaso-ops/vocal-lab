@@ -54,6 +54,8 @@ jobs:
           $vst = "build/Mirrorwall_artefacts/Release/VST3/MIRRORWALL.vst3"
           New-Item -ItemType Directory -Force "$vst/Contents/Resources/engine" | Out-Null
           New-Item -ItemType Directory -Force "$vst/Contents/Resources/presets" | Out-Null
+          New-Item -ItemType Directory -Force "$vst/Contents/Resources/mics" | Out-Null
+          Copy-Item mirrorwall/mics/*.json "$vst/Contents/Resources/mics/"
           Copy-Item -Recurse dist/mirrorwall-engine/* "$vst/Contents/Resources/engine/"
           Copy-Item mirrorwall/presets/*.json "$vst/Contents/Resources/presets/"
           New-Item -ItemType Directory -Force out | Out-Null

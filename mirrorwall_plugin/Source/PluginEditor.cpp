@@ -250,6 +250,28 @@ MirrorEditor::MirrorEditor (MirrorProcessor& p)
     refName.setColour (juce::Label::textColourId, dim);
     timeLabel.setJustificationType (juce::Justification::centred);
 
+    micLabel.setColour (juce::Label::textColourId, dim);
+    micLabel.setJustificationType (juce::Justification::centredRight);
+    addAndMakeVisible (micLabel);
+    micBox.addItem ("Off (as recorded)", 1);
+    {
+        auto dir = micDir();
+        auto files = dir.isDirectory() ? dir.findChildFiles (juce::File::findFiles, false, "*.json") : juce::Array<juce::File>();
+        files.sort();
+        for (auto& f : files)
+        {
+            const auto v = juce::JSON::parse (f);
+            if (! v["eq"].isObject()) continue;
+            micProfiles.add (v);
+            micBox.addItem (v["name"].toString(), micProfiles.size() + 1);
+        }
+    }
+    micBox.setSelectedId (juce::jlimit (0, micProfiles.size(), proc.micIndex) + 1, juce::dontSendNotification);
+    micBox.setTooltip ("Make your current mic sound like the one your chains were built on. "
+                       "Applies to your stock chains; Emulator presets are fitted to your mic directly.");
+    micBox.onChange = [this] { proc.micIndex = micBox.getSelectedId() - 1; requestRender (50); };
+    addAndMakeVisible (micBox);
+
     addAndMakeVisible (loadRaw);
     loadRaw.setColour (juce::TextButton::buttonColourId, accent.darker (0.6f));
     loadRaw.onClick = [this] { chooseRaw(); };
@@ -423,6 +445,24 @@ juce::File MirrorEditor::stockDir() const
     return {};
 }
 
+juce::File MirrorEditor::micDir() const
+{
+    auto env = juce::SystemStats::getEnvironmentVariable ("MIRRORWALL_MICS", {});
+    if (env.isNotEmpty() && juce::File (env).isDirectory())
+        return juce::File (env);
+    const auto me = juce::File::getSpecialLocation (juce::File::currentExecutableFile);
+    for (auto dir : { me.getParentDirectory().getParentDirectory().getChildFile ("Resources/mics"),
+                      me.getParentDirectory().getChildFile ("mics") })
+        if (dir.isDirectory())
+            return dir;
+    return {};
+}
+
+bool MirrorEditor::presetIsStock() const
+{
+    return juce::isPositiveAndBelow (presetIndex, presetFiles.size()) && ! presetFiles[presetIndex].isAChildOf (userDir());
+}
+
 juce::File MirrorEditor::userDir() const
 {
     auto d = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
@@ -509,6 +549,7 @@ void MirrorEditor::selectPreset (int index, bool resetTuning)
 {
     if (! juce::isPositiveAndBelow (index, presetFiles.size())) return;
     preset = juce::JSON::parse (presetFiles[index]);
+    presetIndex = index;
     proc.presetName = prettyName (presetFiles[index]);
     if (resetTuning)
     {
@@ -598,6 +639,9 @@ void MirrorEditor::startRender()
             if (! o->hasProperty ("drive")) o->setProperty ("drive", 6.0);
             if (! o->hasProperty ("mix")) o->setProperty ("mix", 0.55);
         }
+    if (proc.micIndex > 0 && proc.micIndex <= micProfiles.size() && presetIsStock())
+        if (auto* o = P.getDynamicObject())
+            o->setProperty ("mic_eq", cloneVar (micProfiles[proc.micIndex - 1]["eq"]));
     mw::Macros m;
     m.comp = proc.knobComp; m.reverb = proc.knobReverb; m.delay = proc.knobDelay; m.fx = proc.knobFx;
     m.deess = proc.knobDeess; m.drive = proc.knobDrive; m.out = proc.knobOut; m.gate = proc.knobGate;
@@ -777,6 +821,7 @@ void MirrorEditor::refresh()
     abBtn.setButtonText (proc.hearProcessed ? "Hearing: MIRRORWALL" : "Hearing: RAW");
     abBtn.setColour (juce::TextButton::buttonColourId, proc.hearProcessed ? accent.darker (0.55f) : panel2);
     buildBtn.setEnabled (! busy);
+    micBox.setEnabled (presetIsStock());
     loadRaw.setEnabled (! busy);
     keyFromBeat.setEnabled (! busy);
     play.setEnabled (proc.rawFile.existsAsFile());
@@ -845,6 +890,8 @@ void MirrorEditor::resized()
     auto src = r.removeFromTop (34);
     loadRaw.setBounds (src.removeFromLeft (140).reduced (0, 2));
     src.removeFromLeft (10);
+    micBox.setBounds (src.removeFromRight (300).reduced (0, 4));
+    micLabel.setBounds (src.removeFromRight (40));
     rawName.setBounds (src);
     r.removeFromTop (10);
 

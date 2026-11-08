@@ -1,0 +1,24 @@
+{
+ "name": "Samson C01U Pro -> Mojave MA-50",
+ "source": "ORANGE_dry_vocal_1 vs rich shit MEX RAW VOX",
+ "note": "Upper-range correction only (1-14 kHz); lows left alone because the C01U take was already filtered.",
+ "eq": {
+  "hpf": 0.0,
+  "hpf_order": 0,
+  "lpf": 20000.0,
+  "gains": [
+   -0.0,
+   0.02,
+   -0.06,
+   0.2,
+   -0.37,
+   0.78,
+   0.84,
+   -4.68,
+   -3.13,
+   -4.45,
+   -8.66,
+   1.53
+  ]
+ }
+}

@@ -52,6 +52,7 @@ public:
     double knobComp = 1, knobReverb = 1, knobDelay = 1, knobFx = 1, knobDeess = 1,
            knobDrive = 0, knobOut = 0, knobGate = 1;
     bool hearProcessed = true;
+    int micIndex = 1;                     // 0 = off, else index into the mic profiles
 
 private:
     juce::SpinLock lock;

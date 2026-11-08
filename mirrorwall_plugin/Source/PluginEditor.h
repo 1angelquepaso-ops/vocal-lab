@@ -97,7 +97,9 @@ private:
 
     // source
     juce::TextButton loadRaw { "Load raw vocal" };
-    juce::Label rawName, info;
+    juce::Label rawName, info, micLabel { {}, "Mic" };
+    juce::ComboBox micBox;
+    juce::Array<juce::var> micProfiles;
     // chain
     juce::Label chainLabel { {}, "CHAIN" }, emuLabel { {}, "EMULATOR" };
     juce::ComboBox presetBox;
@@ -134,6 +136,9 @@ private:
     juce::File engineExe() const;
     juce::File stockDir() const;
     juce::File userDir() const;
+    juce::File micDir() const;
+    bool presetIsStock() const;
+    int presetIndex = -1;
     juce::File exportDir() const;
     juce::File tunedFile() const { return proc.sessionDir.getChildFile ("tuned.wav"); }
     juce::File mixFile() const { return proc.sessionDir.getChildFile ("mirrorwall.wav"); }
