@@ -152,6 +152,43 @@ def shift(y, sr, semitones, formant=True):
     return out[:len(y)]
 
 
+def merge_regions(regions, pad=0.0, gap=0.0):
+    """Sort, pad and merge (start, end) second ranges that touch or nearly touch."""
+    out = []
+    for s, e in sorted((max(0.0, s - pad), e + pad) for s, e in regions):
+        if out and s <= out[-1][1] + gap:
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    return [tuple(r) for r in out]
+
+
+def shift_regions(y, sr, semitones, regions, formant=True, pad=0.3):
+    """Pitch-shift only the given (start, end) second ranges, in ONE Rubber
+    Band pass: the ranges (plus padding) are laid end to end with short
+    silences between, shifted together, then put back in place. Everything
+    outside the ranges stays silent. For a sparse harmony this is many times
+    faster than shifting the whole file.
+    Returns [(start_sample, audio), ...] chunks."""
+    regs = merge_regions(regions, pad=pad, gap=2 * pad)
+    if not regs:
+        return []
+    sil = np.zeros(int(pad * sr), dtype='float32')
+    parts, spans, cur = [], [], 0
+    for s, e in regs:
+        a, b = int(s * sr), min(int(e * sr), len(y))
+        if b <= a:
+            continue
+        parts += [y[a:b], sil]
+        spans.append((a, cur, b - a))
+        cur += (b - a) + len(sil)
+    if not parts:
+        return []
+    joined = np.concatenate(parts).astype('float32')
+    shifted = shift(joined, sr, semitones, formant)
+    return [(a, shifted[o:o + n].copy()) for a, o, n in spans]
+
+
 def build_bank(y, sr, intervals, formant=True):
     return {iv: shift(y, sr, iv, formant) for iv in sorted(set(intervals))}
 
