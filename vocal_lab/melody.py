@@ -28,6 +28,9 @@ class Feel:
     lo: int = 2               # nearest allowed distance from the lead (semis)
     hi: int = 10              # farthest allowed distance from the lead
     split_min: float = 0.45   # lead notes shorter than this never split
+    colour: float = 0.0       # 0 = chord tones on syllables, 1 = 9ths/11ths/13ths too
+    flavour: str = ''         # '' | 'phrygian' (flat 2) | 'harmonic' (raised 7)
+    flavour_rate: float = 0.5 # how keen it is to use the flavour note mid-syllable
 
 
 def events(notes, key, feel, rng):
@@ -38,7 +41,9 @@ def events(notes, key, feel, rng):
         dur = n['end'] - n['start']
         rest = rng.random() < feel.rest and gi > 0
         k = 1
-        if dur >= feel.split_min and rng.random() < feel.split:
+        split = max(feel.split, 0.9) if feel.flavour else feel.split
+        smin = min(feel.split_min, 0.35) if feel.flavour else feel.split_min
+        if dur >= smin and rng.random() < split:
             k = 2 if dur < 0.9 or rng.random() < 0.6 else 3
         # uneven divisions sound sung, even ones sound sequenced
         w = rng.dirichlet(np.full(k, 4.0)) if k > 1 else np.array([1.0])
@@ -55,15 +60,42 @@ def line(notes, key, feel=Feel(), chords=None, seed=0):
     evs = events(notes, key, feel, rng)
     sign = 1 if feel.side == 'up' else -1
     prev_t = prev_src = prev_ic = None
-    for e in evs:
+    forced = None
+    for k, e in enumerate(evs):
         if e['rest']:
             e['target'] = None
+            forced = None
             continue
         src = e['src']
         chord = H.chord_at(chords or [], e['start'])
+        if forced is not None:
+            # previous slot was a flavour note: this one is its resolution
+            e['target'], e['resolves'] = forced, True
+            prev_t, prev_src, prev_ic = forced, src, abs(forced - src) % 12
+            forced = None
+            continue
         lo, hi = (src + feel.lo, src + feel.hi) if sign > 0 else \
             (src - feel.hi, src - feel.lo)
-        cands = [m for m in key.notes if lo <= m <= hi]
+        cands = [int(m) for m in key.notes if lo <= m <= hi]
+        colour = H.colour_tones(chord, key) if chord else set()
+        flav = None
+        nxt = evs[k + 1] if k + 1 < len(evs) else None
+        if feel.flavour and not e['onset'] and nxt and not nxt['rest'] and \
+                H.flavour_ok(feel.flavour, key, chord):
+            fo, ro, _ = H.FLAVOURS[feel.flavour]
+            fpc = (key.tonic + fo) % 12
+            for m in range(lo - 2, hi + 3):      # a passing note may poke past the range
+                if m % 12 != fpc:
+                    continue
+                res = m - 1 if fo == 1 else m + 1          # half-step resolution
+                nchord = H.chord_at(chords or [], nxt['start'])
+                # the resolution must be consonant with the lead if it lands on a syllable
+                if nxt['onset'] and (abs(res - nxt['src']) % 12) in H.CLASH:
+                    continue
+                if abs(m - src) % 12 == 6:
+                    continue
+                flav = (m, res)
+                cands.append(m)
 
         # sustain: keep the previous pitch if it's still consonant here
         if prev_t is not None and e['onset'] and rng.random() < feel.hold \
@@ -78,7 +110,9 @@ def line(notes, key, feel=Feel(), chords=None, seed=0):
             ic = abs(c - src) % 12
             w = 1.0
             # harmonic rule: consonant on the syllable, passing tones only mid-note
-            if ic in H.CLASH:
+            if flav and c == flav[0]:
+                w *= 6.0 * feel.flavour_rate
+            elif ic in H.CLASH:
                 if e['onset'] or ic == 6:
                     ws.append(0.0)
                     continue
@@ -86,7 +120,12 @@ def line(notes, key, feel=Feel(), chords=None, seed=0):
             if ic == 0:
                 w *= 0.05                     # don't double the lead
             if chord and e['onset']:
-                w *= 2.5 if c % 12 in chord else 0.7
+                if c % 12 in chord:
+                    w *= 2.5
+                elif c % 12 in colour:
+                    w *= 0.7 + 2.3 * feel.colour
+                else:
+                    w *= 0.7
             if prev_t is not None:
                 leap = abs(c - prev_t)
                 if leap == 0:
@@ -116,6 +155,10 @@ def line(notes, key, feel=Feel(), chords=None, seed=0):
         else:
             t = int(rng.choice(cands, p=ws / ws.sum()))
         e['target'] = t
+        e['colour'] = bool(chord) and t % 12 in colour
+        if flav and t == flav[0]:
+            e['flavour'] = True
+            forced = flav[1]
         prev_t, prev_src, prev_ic = t, src, abs(t - src) % 12
     return evs
 

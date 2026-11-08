@@ -25,6 +25,53 @@ CHORD_QUAL = {'': [0, 4, 7], 'm': [0, 3, 7], 'dim': [0, 3, 6],
 CLASH = {1, 2, 6, 10, 11}
 
 
+class Chord(frozenset):
+    """A chord's pitch classes, plus its root when known."""
+    root = None
+
+
+def make_chord(pcs, root=None):
+    c = Chord(pcs)
+    c.root = root
+    return c
+
+
+def chord_root(chord):
+    """Root if known, else the pitch class with a 3rd/sus and a 5th above it."""
+    if chord is None:
+        return None
+    if getattr(chord, 'root', None) is not None:
+        return chord.root
+    for r in chord:
+        if (r + 7) % 12 in chord and any((r + i) % 12 in chord for i in (3, 4, 2, 5)):
+            return r
+    return min(chord)
+
+
+def colour_tones(chord, key):
+    """In-key 9th, 11th and 13th of the chord that aren't already in it."""
+    r = chord_root(chord)
+    if r is None:
+        return set()
+    return {(r + i) % 12 for i in (2, 5, 9)} & set(key.pcs) - set(chord)
+
+
+# Dark flavours: an out-of-key note used as a quick passing tone that must
+# resolve by half step to the tonic, and only over chords that don't contain
+# the in-key note it would rub against.
+#   name: (offset from tonic, resolution offset, natural note it clashes with)
+FLAVOURS = {
+    'phrygian': (1, 0, 2),      # flat 2  -> 1 ; can't sit over a chord with the natural 2
+    'harmonic': (11, 0, 10),    # raised 7 -> 1 ; can't sit over a chord with the natural 7
+}
+
+
+def flavour_ok(name, key, chord):
+    """True if the chord doesn't hold the in-key note the flavour would rub against."""
+    _, _, nat = FLAVOURS[name]
+    return chord is None or (key.tonic + nat) % 12 not in chord
+
+
 class Key:
     def __init__(self, tonic='B', scale='minor'):
         self.tonic = KEYS[tonic]

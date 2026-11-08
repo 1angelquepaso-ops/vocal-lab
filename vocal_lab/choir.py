@@ -37,6 +37,7 @@ class ChoirFeel:
     variety: float = 0.6     # 0 = always best voicing, 1 = loose random pick
     top_k: int = 6
     parallel_penalty: float = 12.0   # cost of a parallel 5th/octave between parts
+    _key: object = None              # set by arrange()
 
 
 def _cost(v, prev, lead, prev_lead, chord, feel, onset):
@@ -59,9 +60,11 @@ def _cost(v, prev, lead, prev_lead, chord, feel, onset):
                 return np.inf
     # chord fit
     if chord:
+        colour = H.colour_tones(chord, feel._key) if feel._key else set()
         for n in names:
-            if v[n] % 12 not in chord:
-                c += 1.6 * (1 - 0.6 * feel.colour)
+            pc = v[n] % 12
+            if pc not in chord:
+                c += 1.6 * (1 - feel.colour) if pc in colour else 1.6
         # the chord should be complete-ish across lead + voices
         covered = {p % 12 for p in parts} & set(chord)
         c += 0.6 * (len(chord) - len(covered))
@@ -85,6 +88,7 @@ def _cost(v, prev, lead, prev_lead, chord, feel, onset):
 def arrange(notes, key, chords=None, feel=ChoirFeel(), seed=0):
     """Return {voice: [(start, end, interval, target)]} plus per-note voicings."""
     rng = np.random.default_rng(seed)
+    feel._key = key
     layout = LAYOUTS[feel.layout]
     names = sorted(layout, key=lambda n: -layout[n][1])   # high to low
     plans = {n: [] for n in names}

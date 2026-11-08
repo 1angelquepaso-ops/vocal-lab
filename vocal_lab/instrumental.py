@@ -153,3 +153,19 @@ def bass_line(R, notes, max_note=55, floor_db=-25):
         j = int(np.argmax(col))
         out.append(int(notes[sel][j]) if col[j] > floor_db else None)
     return out
+
+
+def label_root(label):
+    return NOTE.index(label[:2] if len(label) > 1 and label[1] == '#' else label[0])
+
+
+def timeline_chords(timeline, key, start=0.0, end=None):
+    """[(s, e, label)] -> [(s-start, e-start, Chord-with-root)] for a section."""
+    from . import harmony as H
+    cand = {nm: v[1] for nm, v in candidates(key.pcs, key.tonic).items()}
+    out = []
+    for s, e, lab in timeline:
+        if e > start and (end is None or s < end):
+            out.append((s - start, e - start,
+                        H.make_chord(cand[lab], root=label_root(lab))))
+    return out
