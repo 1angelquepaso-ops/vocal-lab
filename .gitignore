@@ -9,3 +9,6 @@ out*/
 mel/
 real/
 ab/
+build/
+dist/
+*.spec

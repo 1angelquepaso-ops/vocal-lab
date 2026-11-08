@@ -1,0 +1,83 @@
+name: Build Windows plugin
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Engine dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy librosa soundfile pretty_midi mido soxr pyinstaller
+
+      - name: Build engine (vocal-lab-engine.exe)
+        run: >
+          pyinstaller --noconfirm --onedir --console --name vocal-lab-engine
+          --paths . --collect-all librosa --collect-all soundfile --collect-all soxr
+          --collect-all pretty_midi --hidden-import vocal_lab.engine_cli
+          packaging/engine_main.py
+
+      - name: Add Rubber Band
+        shell: pwsh
+        run: |
+          $u = "https://breakfastquay.com/files/releases/rubberband-3.3.0-gpl-executable-windows.zip"
+          Invoke-WebRequest $u -OutFile rb.zip
+          Expand-Archive rb.zip -DestinationPath rb
+          Get-ChildItem rb -Recurse -Include *.exe,*.dll | Copy-Item -Destination dist/vocal-lab-engine/
+
+      - name: Smoke-test the engine
+        shell: pwsh
+        run: |
+          python packaging/make_test_wav.py
+          $e = "dist/vocal-lab-engine/vocal-lab-engine.exe"
+          & $e analyze --session sess --vocal test_vocal.wav
+          & $e generate --session sess --count 2 --voices 2 --seed 1
+          & $e reroll --session sess --option 0 --voice high --seed 2
+          if (-not (Test-Path sess/opt_0_high.wav)) { throw "engine produced no stems" }
+
+      - name: Build VST3
+        run: |
+          cmake -S plugin -B build -G "Visual Studio 17 2022" -A x64
+          cmake --build build --config Release --target VocalLabHarmonizer_VST3
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $vst = "build/VocalLabHarmonizer_artefacts/Release/VST3/vocal-lab Harmonizer.vst3"
+          New-Item -ItemType Directory -Force "$vst/Contents/Resources/engine" | Out-Null
+          Copy-Item -Recurse dist/vocal-lab-engine/* "$vst/Contents/Resources/engine/"
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item -Recurse $vst out/
+          Copy-Item README.md out/
+          Compress-Archive -Path out/* -DestinationPath vocal-lab-Harmonizer-Windows.zip -Force
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: vocal-lab-Harmonizer-Windows
+          path: vocal-lab-Harmonizer-Windows.zip
+
+      - name: Publish download (Releases page)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: vocal-lab Harmonizer (latest build)
+          body: |
+            Download **vocal-lab-Harmonizer-Windows.zip**, unzip it, and copy the
+            `vocal-lab Harmonizer.vst3` folder into `C:\Program Files\Common Files\VST3\`.
+            Then rescan plugins in FL Studio and add it to any mixer insert.
+          files: vocal-lab-Harmonizer-Windows.zip
+          make_latest: true
