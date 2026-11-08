@@ -4,7 +4,9 @@ on:
   push:
     branches: [main]
     paths-ignore: ['pirata/**', 'pirata_plugin/**', 'packaging/pirata_main.py',
-                   'packaging/make_pirata_test.py', '.github/workflows/pirata.yml']
+                   'packaging/make_pirata_test.py', '.github/workflows/pirata.yml',
+                   'mirrorwall/**', 'mirrorwall_plugin/**', 'packaging/mirrorwall_main.py',
+                   'packaging/make_mw_test.py', '.github/workflows/mirrorwall.yml']
   workflow_dispatch:
 
 permissions:

@@ -1,0 +1,72 @@
+name: Build MIRRORWALL
+
+on:
+  push:
+    branches: [main]
+    paths: ['mirrorwall/**', 'mirrorwall_plugin/**', 'packaging/mirrorwall_main.py',
+            'packaging/make_mw_test.py', '.github/workflows/mirrorwall.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Engine dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy librosa soundfile soxr numba praat-parselmouth pyinstaller
+
+      - name: Build engine (mirrorwall-engine.exe)
+        run: >
+          pyinstaller --noconfirm --onedir --console --name mirrorwall-engine
+          --paths . --collect-all librosa --collect-all soundfile --collect-all soxr
+          --collect-all parselmouth --collect-submodules numba --hidden-import mirrorwall.cli
+          packaging/mirrorwall_main.py
+
+      - name: Smoke-test the engine
+        shell: pwsh
+        run: |
+          python packaging/make_mw_test.py
+          $e = "dist/mirrorwall-engine/mirrorwall-engine.exe"
+          & $e tune --in mw_raw.wav --out tuned.wav --key B --scale minor --speed 20 --amount 1
+          & $e key --file mw_ref.wav
+          & $e fit --ref mw_ref.wav --raw mw_raw.wav --out test_preset.json --name SMOKE
+          if (-not (Test-Path test_preset.json)) { throw "engine produced no preset" }
+          if (-not (Test-Path tuned.wav)) { throw "engine produced no tuned file" }
+
+      - name: Build VST3
+        run: |
+          cmake -S mirrorwall_plugin -B build -A x64
+          cmake --build build --config Release --target Mirrorwall_VST3
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $vst = "build/Mirrorwall_artefacts/Release/VST3/MIRRORWALL.vst3"
+          New-Item -ItemType Directory -Force "$vst/Contents/Resources/engine" | Out-Null
+          New-Item -ItemType Directory -Force "$vst/Contents/Resources/presets" | Out-Null
+          Copy-Item -Recurse dist/mirrorwall-engine/* "$vst/Contents/Resources/engine/"
+          Copy-Item mirrorwall/presets/*.json "$vst/Contents/Resources/presets/"
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item -Recurse $vst out/
+          Compress-Archive -Path out/* -DestinationPath MIRRORWALL-Windows.zip -Force
+
+      - name: Publish download (Releases page)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mirrorwall-latest
+          name: MIRRORWALL (latest build)
+          body: |
+            Download **MIRRORWALL-Windows.zip**, unzip it, and copy the `MIRRORWALL.vst3` folder into
+            `C:\Program Files\Common Files\VST3\`. Rescan plugins in FL Studio.
+          files: MIRRORWALL-Windows.zip
+          make_latest: false
