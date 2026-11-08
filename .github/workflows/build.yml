@@ -6,7 +6,8 @@ on:
     paths-ignore: ['pirata/**', 'pirata_plugin/**', 'packaging/pirata_main.py',
                    'packaging/make_pirata_test.py', '.github/workflows/pirata.yml',
                    'mirrorwall/**', 'mirrorwall_plugin/**', 'packaging/mirrorwall_main.py',
-                   'packaging/make_mw_test.py', '.github/workflows/mirrorwall.yml']
+                   'packaging/make_mw_test.py', '.github/workflows/mirrorwall.yml',
+                   'dreammic_plugin/**', '.github/workflows/dreammic.yml']
   workflow_dispatch:
 
 permissions:

@@ -1,0 +1,49 @@
+name: Build DREAMMIC
+
+on:
+  push:
+    branches: [main]
+    paths: ['dreammic_plugin/**', '.github/workflows/dreammic.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build VST3 + test tool
+        run: |
+          cmake -S dreammic_plugin -B build -A x64
+          cmake --build build --config Release --target Dreammic_VST3 dm_render
+
+      - name: Smoke-test (LIVE and HQ render)
+        shell: pwsh
+        run: |
+          python -c "import wave,struct,math; w=wave.open('t.wav','w'); w.setnchannels(2); w.setsampwidth(2); w.setframerate(44100); w.writeframes(b''.join(struct.pack('<hh',int(8000*math.sin(i*0.03)),int(8000*math.sin(i*0.03))) for i in range(88200))); w.close()"
+          $r = Get-ChildItem -Recurse build -Filter dm_render.exe | Select-Object -First 1
+          & $r.FullName t.wav live.wav mode=0 mic=0 pre=0
+          & $r.FullName t.wav hq.wav mode=1 mic=5 pre=2
+          if (-not (Test-Path hq.wav)) { throw "render failed" }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $vst = "build/Dreammic_artefacts/Release/VST3/DREAMMIC.vst3"
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item -Recurse $vst out/
+          Compress-Archive -Path out/* -DestinationPath DREAMMIC-Windows.zip -Force
+
+      - name: Publish download (Releases page)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dreammic-latest
+          name: DREAMMIC (latest build)
+          body: |
+            Download **DREAMMIC-Windows.zip**, unzip it, and copy the `DREAMMIC.vst3` folder into
+            `C:\Program Files\Common Files\VST3\`. Rescan plugins in FL Studio.
+          files: DREAMMIC-Windows.zip
+          make_latest: false
