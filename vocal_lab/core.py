@@ -4,7 +4,9 @@ load/save audio, pitch tracking, note segmentation, and a formant-preserving
 pitch-shift "bank" built on the Rubber Band R3 engine.
 """
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 
 import librosa
@@ -115,6 +117,19 @@ def segment_notes(times, midi, min_dur=0.09, gap_bridge=0.05, split_jump=0.75):
 
 
 # ------------------------------------------------- pitch-shift bank
+def rubberband_exe():
+    """Rubber Band CLI: $RUBBERBAND, next to the bundled engine, or on PATH."""
+    env = os.environ.get('RUBBERBAND')
+    if env and os.path.exists(env):
+        return env
+    here = os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else __file__)
+    for name in ('rubberband.exe', 'rubberband'):
+        p = os.path.join(here, name)
+        if os.path.exists(p):
+            return p
+    return shutil.which('rubberband') or 'rubberband'
+
+
 def shift(y, sr, semitones, formant=True):
     """Offline R3 pitch shift with formant preservation. Length-exact."""
     if semitones == 0:
@@ -122,11 +137,12 @@ def shift(y, sr, semitones, formant=True):
     with tempfile.TemporaryDirectory() as d:
         src, dst = os.path.join(d, 'in.wav'), os.path.join(d, 'out.wav')
         sf.write(src, y, sr, subtype='FLOAT')
-        cmd = ['rubberband', '-3', '-q', '-p', str(semitones)]
+        cmd = [rubberband_exe(), '-3', '-q', '-p', str(semitones)]
         if formant:
             cmd.append('-F')
         cmd += [src, dst]
-        subprocess.run(cmd, check=True, capture_output=True)
+        subprocess.run(cmd, check=True, capture_output=True,
+                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         out, _ = sf.read(dst, dtype='float32')
     if out.ndim > 1:
         out = out.mean(axis=1)

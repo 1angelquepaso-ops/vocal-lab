@@ -163,3 +163,60 @@ def check(plans, notes, key, chords=None):
             'parallel_5ths_8ves': par,
             'chord_tones': f"{100 * np.mean(ct):.0f}%" if ct else 'n/a',
             'avg_move_semitones': {n: round(float(np.mean(m)), 2) for n, m in moves.items() if m}}
+
+
+def reroll_voice(plans, voice, notes, key, chords=None, feel=None, seed=0,
+                 window=None):
+    """New part for one voice; every other voice stays exactly as it is.
+
+    The new line is chosen note by note against the lead AND the kept voices
+    (same clash, chord, doubling and parallel rules as a full arrangement),
+    with smooth motion along the rerolled voice itself. It tries to differ
+    from the old line rather than land back on it.
+    """
+    feel = feel or ChoirFeel()
+    feel._key = key
+    rng = np.random.default_rng(seed)
+    lay = {**{k: v for L in LAYOUTS.values() for k, v in L.items()}}
+    lo, hi = window or lay.get(voice, (2, 9))
+    others = {n: {p[0]: p[3] for p in pl} for n, pl in plans.items() if n != voice}
+    old = {p[0]: p[3] for p in plans.get(voice, [])}
+    new_plan, prev_t, prev_lead, prev_full = [], None, None, None
+    for note in notes:
+        s = note['start']
+        lead = key.snap(note['pitch'])
+        chord = H.chord_at(chords or [], s)
+        fixed = {n: d[s] for n, d in others.items() if s in d}
+        cands = [int(m) for m in key.notes if lead + lo <= m <= lead + hi]
+        scored = []
+        for c in cands:
+            v = {**fixed, voice: c}
+            # keep the stack ordered by register, no crossing
+            order = sorted(v, key=lambda n: -lay.get(n, (0, 0))[1])
+            if any(v[order[j]] <= v[order[j + 1]] for j in range(len(order) - 1)):
+                continue
+            cost = _cost(v, prev_full, lead, prev_lead, chord, feel, onset=True)
+            if not np.isfinite(cost):
+                continue
+            if old.get(s) == c:
+                cost += 4.0                     # push away from the old line
+            scored.append((cost, c))
+        if not scored:
+            prev_lead = lead
+            continue
+        scored.sort()
+        top = scored[:feel.top_k]
+        cs = np.array([x[0] for x in top])
+        w = np.exp(-(cs - cs.min()) / (0.15 + 2.0 * feel.variety))
+        c = top[int(rng.choice(len(top), p=w / w.sum()))][1]
+        new_plan.append((s, note['end'], int(c - lead), int(c)))
+        prev_full = {**fixed, voice: c} if len(fixed) == len(others) else None
+        prev_t, prev_lead = c, lead
+    out = dict(plans)
+    out[voice] = new_plan
+    return out
+
+
+def add_voice(plans, voice, notes, key, chords=None, feel=None, seed=0):
+    """Add a new voice that fits around the existing ones."""
+    return reroll_voice({**plans, voice: []}, voice, notes, key, chords, feel, seed)
