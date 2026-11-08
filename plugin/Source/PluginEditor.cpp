@@ -573,10 +573,11 @@ void HarmonizerEditor::prepareExports()
         const auto dst = dir.getChildFile (base + "_opt" + juce::String (id + 1) + "_" + label
                                            + "_" + (*vs)[i]["name"].toString() + ".wav");
         juce::Component::SafePointer<Lane> lane (voiceLanes[i].get());
-        juce::Thread::launch ([src, dst, lane, id, this]
+        juce::Component::SafePointer<HarmonizerEditor> safe (this);
+        juce::Thread::launch ([src, dst, lane, id, safe]
         {
             const bool ok = src.existsAsFile() && (dst.deleteFile(), src.copyFileTo (dst));
-            juce::MessageManager::callAsync ([lane, dst, ok, id, safe = juce::Component::SafePointer<HarmonizerEditor> (this)]
+            juce::MessageManager::callAsync ([lane, dst, ok, id, safe]
             {
                 if (lane != nullptr && safe != nullptr && safe->currentId() == id)
                     lane->setExport (dst, ok);
