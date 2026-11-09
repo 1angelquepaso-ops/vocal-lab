@@ -1,0 +1,48 @@
+name: Build WOBBLE-D
+
+on:
+  push:
+    branches: [main, wobble-d-v1]
+    paths: ['wobbled_plugin/**', '.github/workflows/wobbled.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build VST3 + test tool
+        run: |
+          cmake -S wobbled_plugin -B build -A x64
+          cmake --build build --config Release --target Wobbled_VST3 wb_render
+
+      - name: Self-test (clicks, determinism, song-lock, sample pitch, sub out)
+        shell: pwsh
+        run: |
+          $r = Get-ChildItem -Recurse build -Filter wb_render.exe | Select-Object -First 1
+          & $r.FullName selftest
+          if ($LASTEXITCODE -ne 0) { throw "self-test failed" }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $vst = "build/Wobbled_artefacts/Release/VST3/WOBBLE-D.vst3"
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item -Recurse $vst out/
+          Compress-Archive -Path out/* -DestinationPath WOBBLE-D-Windows.zip -Force
+
+      - name: Publish download (Releases page)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: wobbled-latest
+          name: WOBBLE-D (latest build)
+          body: |
+            Download **WOBBLE-D-Windows.zip**, unzip it, and copy the `WOBBLE-D.vst3` folder into
+            `C:\Program Files\Common Files\VST3\`. In FL Studio: Options > Manage plugins > Find installed plugins,
+            then add WOBBLE-D to the Channel Rack (it's an instrument).
+          files: WOBBLE-D-Windows.zip
+          make_latest: false
