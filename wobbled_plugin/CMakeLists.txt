@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(Wobbled VERSION 0.1.0)
+project(Wobbled VERSION 0.1.1)
 
 include(FetchContent)
 FetchContent_Declare(JUCE

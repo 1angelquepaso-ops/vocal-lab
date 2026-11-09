@@ -21,6 +21,47 @@ public:
     juce::Font getTextButtonFont (juce::TextButton&, int) override { return juce::FontOptions (12.0f, juce::Font::bold); }
 };
 
+// Right-click on any control opens FL's own parameter menu (Create automation clip, Link to controller...)
+bool showHostMenu (juce::Component& from, juce::AudioProcessorParameter* param, juce::Point<int> screenPos);
+
+struct HostSlider : juce::Slider
+{
+    juce::AudioProcessorParameter* param = nullptr;
+    bool rightDown = false;
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu()) { rightDown = true; showHostMenu (*this, param, e.getScreenPosition()); return; }
+        rightDown = false; juce::Slider::mouseDown (e);
+    }
+    void mouseDrag (const juce::MouseEvent& e) override { if (! rightDown) juce::Slider::mouseDrag (e); }
+    void mouseUp (const juce::MouseEvent& e) override { if (rightDown) { rightDown = false; return; } juce::Slider::mouseUp (e); }
+    void mouseDoubleClick (const juce::MouseEvent& e) override { if (! e.mods.isPopupMenu()) juce::Slider::mouseDoubleClick (e); }
+};
+
+struct HostButton : juce::TextButton
+{
+    juce::AudioProcessorParameter* param = nullptr;
+    bool rightDown = false;
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu()) { rightDown = true; showHostMenu (*this, param, e.getScreenPosition()); return; }
+        rightDown = false; juce::TextButton::mouseDown (e);
+    }
+    void mouseDrag (const juce::MouseEvent& e) override { if (! rightDown) juce::TextButton::mouseDrag (e); }
+    void mouseUp (const juce::MouseEvent& e) override { if (rightDown) { rightDown = false; return; } juce::TextButton::mouseUp (e); }
+};
+
+struct HostCombo : juce::ComboBox
+{
+    juce::AudioProcessorParameter* param = nullptr;
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu()) { showHostMenu (*this, param, e.getScreenPosition()); return; }
+        juce::ComboBox::mouseDown (e);
+    }
+    void mouseUp (const juce::MouseEvent& e) override { if (! e.mods.isPopupMenu()) juce::ComboBox::mouseUp (e); }
+};
+
 // knob with caption underneath
 class Knob : public juce::Component
 {
@@ -28,7 +69,7 @@ public:
     Knob (juce::AudioProcessorValueTreeState& st, const char* paramId, const juce::String& caption, const juce::String& help);
     void resized() override;
     void paint (juce::Graphics&) override;
-    juce::Slider slider;
+    HostSlider slider;
 private:
     juce::String caption;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> att;
@@ -40,7 +81,7 @@ public:
     Choice (juce::AudioProcessorValueTreeState& st, const char* paramId, const juce::String& caption, const juce::String& help);
     void resized() override;
     void paint (juce::Graphics&) override;
-    juce::ComboBox box;
+    HostCombo box;
 private:
     juce::String caption;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> att;
@@ -52,7 +93,7 @@ public:
     Toggle (juce::AudioProcessorValueTreeState& st, const char* paramId, const juce::String& text, const juce::String& caption, const juce::String& help);
     void resized() override;
     void paint (juce::Graphics&) override;
-    juce::TextButton button;
+    HostButton button;
 private:
     juce::String caption;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> att;
@@ -111,7 +152,7 @@ public:
 private:
     WobbleProcessor& proc;
     juce::RangedAudioParameter *px, *py;
-    bool dragging = false, springing = false;
+    bool dragging = false, springing = false, rightClick = false;
     float lastX = 9, lastY = 9; int lastXT = -1, lastYT = -1;
     std::deque<juce::Point<float>> trail;
     juce::Rectangle<float> pad() const { return getLocalBounds().toFloat().reduced (2.0f); }
@@ -157,7 +198,7 @@ private:
     juce::TextButton loadBtn { "LOAD SAMPLE" }, initBtn { "INIT" }, trimBtn { "TRIM" }, normBtn { "NORM" };
     juce::TextButton rerollBtn { "REROLL" }, randBtn { "RANDOMIZE" }, loopAllBtn { "LOOP ALL" }, centreBtn { "CENTRE" };
     juce::ComboBox gridBox, presetBox;
-    juce::TextButton xBtns[4], yBtns[4];
+    wbui::HostButton xBtns[4], yBtns[4];
     std::unique_ptr<juce::FileChooser> chooser;
     juce::String status;
 
@@ -167,6 +208,8 @@ private:
     wbui::Knob* glideK = nullptr;
 
     void timerCallback() override;
+    void parentHierarchyChanged() override;
+    void keepFocusInHost();
     void layoutContent();
     void openChooser();
     void loadFile (const juce::File&);

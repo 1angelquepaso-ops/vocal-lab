@@ -82,6 +82,32 @@ void Look::drawComboBox (juce::Graphics& g, int w, int h, bool, int, int, int, i
     g.fillPath (tri);
 }
 
+// ====================================================================== host (FL) parameter menu
+bool wbui::showHostMenu (juce::Component& from, juce::AudioProcessorParameter* param, juce::Point<int> screenPos)
+{
+    if (param == nullptr) return false;
+    auto* ed = from.findParentComponentOfClass<juce::AudioProcessorEditor>();
+    if (ed == nullptr) return false;
+    if (auto* ctx = ed->getHostContext())
+        if (auto menu = ctx->getContextMenuForParameter (param))
+        {
+            menu->showNativeMenu (ed->getLocalPoint (nullptr, screenPos));
+            return true;
+        }
+    // host has no menu (e.g. Standalone): offer a reset
+    juce::PopupMenu m;
+    m.addItem (1, "Reset to default");
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea ({ screenPos.x, screenPos.y, 1, 1 }),
+                     [param] (int r)
+                     {
+                         if (r != 1) return;
+                         param->beginChangeGesture();
+                         param->setValueNotifyingHost (param->getDefaultValue());
+                         param->endChangeGesture();
+                     });
+    return false;
+}
+
 // ====================================================================== small controls
 static void drawCaption (juce::Graphics& g, juce::Rectangle<int> r, const juce::String& t)
 {
@@ -99,6 +125,7 @@ Knob::Knob (juce::AudioProcessorValueTreeState& st, const char* paramId, const j
     slider.setTooltip (help);
     addAndMakeVisible (slider);
     att = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (st, paramId, slider);
+    slider.param = st.getParameter (paramId);
     if (auto* p = st.getParameter (paramId))
         slider.setDoubleClickReturnValue (true, p->convertFrom0to1 (p->getDefaultValue()));
 }
@@ -113,6 +140,7 @@ Choice::Choice (juce::AudioProcessorValueTreeState& st, const char* paramId, con
     box.setTooltip (help);
     addAndMakeVisible (box);
     att = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (st, paramId, box);
+    box.param = st.getParameter (paramId);
 }
 void Choice::resized()
 {
@@ -129,6 +157,7 @@ Toggle::Toggle (juce::AudioProcessorValueTreeState& st, const char* paramId, con
     button.setTooltip (help);
     addAndMakeVisible (button);
     att = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (st, paramId, button);
+    button.param = st.getParameter (paramId);
 }
 void Toggle::resized()
 {
@@ -455,7 +484,7 @@ XYPad::XYPad (WobbleProcessor& p) : proc (p)
 {
     px = p.state.getParameter (id::xyX);
     py = p.state.getParameter (id::xyY);
-    setTooltip ("XY pad: the centre is your patch. Drag to push the wobble; the buttons pick what each axis does. Double-click to centre.");
+    setTooltip ("XY pad: the centre is your patch. Drag to push the wobble; the buttons pick what each axis does. Double-click to centre. Right-click: automate X or Y.");
 }
 
 void XYPad::paint (juce::Graphics& g)
@@ -548,20 +577,38 @@ void XYPad::setFromMouse (juce::Point<float> p)
 
 void XYPad::mouseDown (const juce::MouseEvent& e)
 {
+    if (e.mods.isPopupMenu())
+    {
+        rightClick = true;
+        juce::PopupMenu m;
+        bool any = false;
+        if (auto* ed = findParentComponentOfClass<juce::AudioProcessorEditor>())
+            if (auto* ctx = ed->getHostContext())
+            {
+                if (auto mx = ctx->getContextMenuForParameter (px)) { m.addSubMenu ("XY X  (left / right)", mx->getEquivalentPopupMenu()); any = true; }
+                if (auto my = ctx->getContextMenuForParameter (py)) { m.addSubMenu ("XY Y  (up / down)", my->getEquivalentPopupMenu()); any = true; }
+            }
+        if (! any) m.addItem (1, "Centre");
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea ({ e.getScreenX(), e.getScreenY(), 1, 1 }),
+                         [this] (int r) { if (r == 1) centre(); });
+        return;
+    }
+    rightClick = false;
     if (springing) { px->endChangeGesture(); py->endChangeGesture(); springing = false; }
     dragging = true;
     px->beginChangeGesture(); py->beginChangeGesture();
     setFromMouse (e.position);
 }
-void XYPad::mouseDrag (const juce::MouseEvent& e) { if (dragging) setFromMouse (e.position); }
+void XYPad::mouseDrag (const juce::MouseEvent& e) { if (dragging && ! rightClick) setFromMouse (e.position); }
 void XYPad::mouseUp (const juce::MouseEvent&)
 {
+    if (rightClick) { rightClick = false; return; }
     if (! dragging) return;
     dragging = false;
     if (proc.state.getRawParameterValue (id::xySpring)->load() > 0.5f) springing = true;   // keep the gesture open while it springs back
     else { px->endChangeGesture(); py->endChangeGesture(); }
 }
-void XYPad::mouseDoubleClick (const juce::MouseEvent&) { centre(); }
+void XYPad::mouseDoubleClick (const juce::MouseEvent& e) { if (! e.mods.isPopupMenu()) centre(); }
 
 void XYPad::centre()
 {
@@ -604,7 +651,7 @@ void WobbleEditor::Content::paint (juce::Graphics& g)
     g.drawText ("WOBBLE-D", 16, 6, 200, 36, juce::Justification::left);
     g.setColour (col::dim);
     g.setFont (juce::FontOptions (11.0f));
-    g.drawText ("dubstep wobble bass  v0.1", 152, 18, 200, 16, juce::Justification::left);
+    g.drawText ("dubstep wobble bass  v0.1.1", 152, 18, 200, 16, juce::Justification::left);
     for (auto& s : sections)
     {
         g.setColour (col::dim);
@@ -724,6 +771,7 @@ WobbleEditor::WobbleEditor (WobbleProcessor& p) : AudioProcessorEditor (p), proc
     {
         auto& xb = xBtns[i]; auto& yb = yBtns[i];
         xb.setButtonText (wb::xTargetNames[i]); yb.setButtonText (wb::yTargetNames[i]);
+        xb.param = proc.state.getParameter (id::xTarget); yb.param = proc.state.getParameter (id::yTarget);
         xb.getProperties().set ("accent", (juce::int64) col::mag.getARGB());
         yb.getProperties().set ("accent", (juce::int64) col::mag.getARGB());
         xb.setTooltip ("Make the pad's left/right control " + wb::xTargetNames[i]);
@@ -784,6 +832,7 @@ WobbleEditor::WobbleEditor (WobbleProcessor& p) : AudioProcessorEditor (p), proc
         if (auto* k = dynamic_cast<Knob*> (c); k != nullptr && (c == rowOut[1] || c == rowOut[2]))
             k->slider.getProperties().set ("accent", (juce::int64) col::sub.getARGB());
 
+    keepFocusInHost();
     setResizable (true, true);
     setResizeLimits (800, 500, 1920, 1200);
     if (auto* c = getConstrainer()) c->setFixedAspectRatio ((double) baseW / baseH);
@@ -798,6 +847,24 @@ WobbleEditor::~WobbleEditor()
 }
 
 void WobbleEditor::paint (juce::Graphics& g) { g.fillAll (col::bg); }
+
+// Clicking WOBBLE-D must never take the keyboard away from FL (typing keyboard / shortcuts keep working).
+static void noFocus (juce::Component& c)
+{
+    c.setWantsKeyboardFocus (false);
+    c.setMouseClickGrabsKeyboardFocus (false);
+    for (auto* ch : c.getChildren()) noFocus (*ch);
+}
+void WobbleEditor::keepFocusInHost()
+{
+    noFocus (*this);
+    if (auto* top = getTopLevelComponent())
+    {
+        top->setWantsKeyboardFocus (false);
+        top->setMouseClickGrabsKeyboardFocus (false);   // window won't activate on click (WM_MOUSEACTIVATE -> NOACTIVATE)
+    }
+}
+void WobbleEditor::parentHierarchyChanged() { keepFocusInHost(); }
 
 void WobbleEditor::resized()
 {
