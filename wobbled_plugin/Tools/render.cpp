@@ -32,6 +32,7 @@ struct Scenario
     bool playing = true;
     juce::File sample;
     juce::String shapeName;
+    bool liveFirst = false;   // play + tweak with FL stopped before 'exporting'
 };
 struct Result { std::vector<float> L, R, lfo; std::vector<double> songBeat; double renderMs = 0; };
 
@@ -56,6 +57,32 @@ static Result render (const Scenario& sc)
     proc.engine.lfoTrace = &r.lfo;
 
     const double spb = sc.fs * 60.0 / sc.bpm;           // samples per beat
+    if (sc.liveFirst)
+    {
+        // like jamming in FL with the transport stopped: notes from the typing keyboard + knob / pad moves
+        head.playing = false; head.ppq = 0;
+        juce::AudioBuffer<float> lb (4, 512);
+        for (int blk = 0; blk < 400; ++blk)
+        {
+            juce::MidiBuffer m;
+            if (blk % 60 == 5)  m.addEvent (juce::MidiMessage::noteOn (1, 40 + blk % 7, (juce::uint8) 70), 17);
+            if (blk % 60 == 45) m.addEvent (juce::MidiMessage::noteOff (1, 40 + (blk - 40) % 7), 3);
+            if (blk == 50)  { setP (proc, id::xyX, 0.8f); setP (proc, id::chaos, 0.6f); setP (proc, id::xyY, -0.7f); }
+            if (blk == 150) { setP (proc, id::xTarget, 2); setP (proc, id::cutoff, 900); }
+            if (blk == 250) m.addEvent (juce::MidiMessage::pitchWheel (1, 8192), 0);
+            lb.clear(); proc.processBlock (lb, m);
+        }
+        juce::MidiBuffer off; for (int n = 0; n < 128; ++n) off.addEvent (juce::MidiMessage::noteOff (1, n), 0);
+        lb.clear(); proc.processBlock (lb, off);
+        // put every tweaked knob back where the song has it
+        Scenario d; WobbleProcessor ref;
+        for (auto* prm : ref.getParameters())
+            if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (prm))
+                if (auto* t = proc.state.getParameter (rp->getParameterID())) t->setValueNotifyingHost (rp->getDefaultValue());
+        for (auto& kv : sc.params) setP (proc, kv.first, kv.second);
+        for (int blk = 0; blk < 200; ++blk) { juce::MidiBuffer m; lb.clear(); proc.processBlock (lb, m); }   // release tails die
+        head.playing = sc.playing;
+    }
     const long total = (long) std::llround (sc.lengthBeats * spb);
     const int sizes[] = { 480, 512, 128, 1024, 333, 64, 777 };
     double pos = sc.startBeat;
@@ -214,6 +241,16 @@ static int selftest()
         const double d = maxDiff (a.lfo, 0, c.lfo, 0, a.lfo.size());
         check ("Reroll (new seed) changes the pattern", d > 0.05, "max lfo diff " + juce::String (d, 3));
     }
+    // 6b) export after live jamming / tweaking with FL stopped == export from a fresh plugin
+    {
+        Scenario sc; sc.lengthBeats = 8; sc.params = { { id::chaos, 0.4f }, { id::drive, 0.6f } };
+        sc.notes = { { 0, 33, 1.5 }, { 2, 36, 1.5 }, { 4, 31, 3.5 } };
+        const auto fresh = render (sc);
+        sc.liveFirst = true;
+        const auto used = render (sc);
+        const double d = maxDiff (fresh.L, 0, used.L, 0, fresh.L.size());
+        check ("Export after live tweaking == fresh export", d < 1e-6, "max diff " + juce::String (d, 7));
+    }
     // 7) song-lock: starting playback at a different spot gives the same wobble
     {
         auto sc = clickBase();
@@ -285,6 +322,70 @@ static int selftest()
         check ("Sample plays in tune (A3 = 220 Hz)", std::abs (zc - 220) <= 2, juce::String (zc) + " Hz");
         const double s = clickScore (r.L, 220.0, fs, skip, (long) r.L.size());
         check ("Sample loop is click-free", s < 6, "score " + juce::String (s, 2) + " (2-partial source)");
+    }
+    // 10b) save project + reopen: every knob, the drawn shape, loop markers, grid and the sample come back
+    {
+        const auto tmp = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("wb_test_A2.wav");
+        WobbleProcessor a; juce::String err;
+        a.loadSample (tmp, err);
+        juce::Random r (42);
+        for (auto* prm : a.getParameters()) prm->setValueNotifyingHost (r.nextFloat());
+        a.shape = Shape::preset ("Yoi"); a.shape.grid = 12; a.shape.randomize (r); a.shape.loopStart = 0.25f; a.shape.loopEnd = 0.75f;
+        a.shapeChanged();
+        juce::MemoryBlock mb; a.getStateInformation (mb);
+        WobbleProcessor b; b.setStateInformation (mb.getData(), (int) mb.getSize());
+        int bad = 0;
+        for (int i = 0; i < a.getParameters().size(); ++i)
+        {
+            const float va = a.getParameters()[i]->getValue(), vb = b.getParameters()[i]->getValue();
+            const bool isBool = dynamic_cast<juce::AudioParameterBool*> (a.getParameters()[i]) != nullptr;
+            if (isBool ? ((va > 0.5f) != (vb > 0.5f)) : std::abs (va - vb) > 1e-6f)
+            {
+                ++bad;
+                std::printf ("    %s: %.5f vs %.5f\n", a.getParameters()[i]->getName (40).toRawUTF8(), va, vb);
+            }
+        }
+        float ta[Shape::tableSize], tb[Shape::tableSize];
+        a.shape.compile (ta); b.shape.compile (tb);
+        double sd = 0; for (int i = 0; i < Shape::tableSize; ++i) sd = std::max (sd, (double) std::abs (ta[i] - tb[i]));
+        const bool shapeOk = sd < 1e-6 && b.shape.grid == 12 && b.shape.loopStart == 0.25f && b.shape.loopEnd == 0.75f;
+        const bool smpOk = b.sampleForDisplay() != nullptr && b.sampleForDisplay()->buf.getNumSamples() == a.sampleForDisplay()->buf.getNumSamples();
+        check ("Save + reopen restores knobs, shape, loop, sample", bad == 0 && shapeOk && smpOk,
+               juce::String (bad) + " knobs off, shape diff " + juce::String (sd, 6) + (smpOk ? ", sample ok" : ", SAMPLE MISSING"));
+    }
+    // 10c) mono legato glide + poly chords
+    {
+        auto clean = [] { Scenario s; s.params = { { id::source, 1 }, { id::unison, 1 }, { id::fltType, 1 }, { id::cutoff, 20000 }, { id::reso, 0 },
+                                                   { id::drive, 0 }, { id::hq, 0 }, { id::dCutoff, 0 }, { id::subLock, 0 }, { id::clip, 0 } }; return s; };
+        auto hz = [&] (const std::vector<float>& x, double t0, double t1)
+        {
+            int zc = 0; const size_t a = (size_t) (t0 * fs), b = (size_t) (t1 * fs);
+            for (size_t i = a + 1; i < b; ++i) if (x[i - 1] <= 0 && x[i] > 0) ++zc;
+            return zc / (t1 - t0);
+        };
+        auto sc = clean(); sc.params[id::glide] = 200; sc.lengthBeats = 4;
+        sc.notes = { { 0.0, 45, 2.0 }, { 1.0, 57, 2.0 } };          // overlapping = legato slide 110 -> 220 Hz
+        const auto r = render (sc);
+        const double f1 = hz (r.L, 0.1, 0.45), fMid = hz (r.L, 0.52, 0.6), f2 = hz (r.L, 1.1, 1.45);
+        double minLvl = 1;   // no re-attack: level never dips during the slide
+        for (size_t i = (size_t) (0.45 * fs); i < (size_t) (0.9 * fs); i += 480)
+        {
+            float pk = 0; for (size_t j = i; j < i + 480; ++j) pk = std::max (pk, std::abs (r.L[j]));
+            minLvl = std::min (minLvl, (double) pk);
+        }
+        check ("Mono legato glides (no retrigger)", std::abs (f1 - 110) < 3 && fMid > 125 && fMid < 215 && std::abs (f2 - 220) < 3 && minLvl > 0.2,
+               juce::String (f1, 0) + " Hz -> " + juce::String (fMid, 0) + " -> " + juce::String (f2, 0) + " Hz, min level " + juce::String (minLvl, 2));
+
+        auto pc = clean(); pc.params[id::voiceMode] = 1; pc.lengthBeats = 4;
+        pc.notes = { { 0.0, 45, 4.0 }, { 0.0, 49, 4.0 }, { 0.0, 52, 4.0 } };   // A2 C#3 E3
+        const auto q = render (pc);
+        const int N = 32768; const size_t off = (size_t) (0.3 * fs);
+        auto mag = [&] (double f) { double re = 0, im = 0; for (int i = 0; i < N; ++i) { const double w = 0.5 - 0.5 * std::cos (2 * kPi * i / N);
+                                     re += q.L[off + (size_t) i] * w * std::cos (2 * kPi * f * i / fs); im += q.L[off + (size_t) i] * w * std::sin (2 * kPi * f * i / fs); }
+                                     return std::sqrt (re * re + im * im); };
+        const double m1 = mag (110.0), m2 = mag (138.59), m3 = mag (164.81), mOff = mag (123.47);
+        check ("Poly plays all 3 chord notes", m1 > 10 * mOff && m2 > 10 * mOff && m3 > 10 * mOff,
+               "A " + juce::String (m1, 0) + " C# " + juce::String (m2, 0) + " E " + juce::String (m3, 0) + " (gap " + juce::String (mOff, 1) + ")");
     }
     // 11) CPU: heavy patch
     {

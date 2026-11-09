@@ -210,6 +210,8 @@ private:
     void timerCallback() override;
     void parentHierarchyChanged() override;
     void keepFocusInHost();
+    void updateGrid (bool force);
+    int lastGridRate = -1, lastGridSteps = -1;
     void layoutContent();
     void openChooser();
     void loadFile (const juce::File&);

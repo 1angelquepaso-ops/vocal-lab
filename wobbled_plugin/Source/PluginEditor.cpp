@@ -97,7 +97,7 @@ bool wbui::showHostMenu (juce::Component& from, juce::AudioProcessorParameter* p
     // host has no menu (e.g. Standalone): offer a reset
     juce::PopupMenu m;
     m.addItem (1, "Reset to default");
-    m.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea ({ screenPos.x, screenPos.y, 1, 1 }),
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea ({ screenPos.x, screenPos.y, 1, 1 }).withParentComponent (ed),
                      [param] (int r)
                      {
                          if (r != 1) return;
@@ -362,6 +362,15 @@ void LfoView::paint (juce::Graphics& g)
     g.setColour (col::dim);
     g.setFont (juce::FontOptions (10.5f));
     g.drawText ("LOOP", juce::Rectangle<float> (lx + 8, st.getY(), 60, st.getHeight()), juce::Justification::left);
+    {
+        // what the grid means in real time
+        const int rate = (int) proc.state.getRawParameterValue (id::rate)->load();
+        const int loopSteps = juce::roundToInt ((sh.loopEnd - sh.loopStart) * sh.grid);
+        const juce::String info = "pattern " + wb::rateNames[juce::jlimit (0, 12, rate)] + "  -  " + juce::String (sh.grid) + " x "
+                                  + wb::Shape::gridNoteNames()[sh.gridNote] + "  -  loop " + juce::String (loopSteps) + " step" + (loopSteps == 1 ? "" : "s");
+        g.setColour (col::text.withAlpha (0.75f));
+        g.drawText (info, juce::Rectangle<float> (st.getRight() - 330, st.getY(), 320, st.getHeight()), juce::Justification::right);
+    }
 
     // playhead
     if (lastPos >= 0)
@@ -588,9 +597,11 @@ void XYPad::mouseDown (const juce::MouseEvent& e)
                 if (auto mx = ctx->getContextMenuForParameter (px)) { m.addSubMenu ("XY X  (left / right)", mx->getEquivalentPopupMenu()); any = true; }
                 if (auto my = ctx->getContextMenuForParameter (py)) { m.addSubMenu ("XY Y  (up / down)", my->getEquivalentPopupMenu()); any = true; }
             }
-        if (! any) m.addItem (1, "Centre");
-        m.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea ({ e.getScreenX(), e.getScreenY(), 1, 1 }),
-                         [this] (int r) { if (r == 1) centre(); });
+        m.addItem (1, "Centre");
+        // draw the menu inside the plugin window so hosts with always-on-top plugin windows (FL) can't hide it
+        auto opts = juce::PopupMenu::Options().withTargetScreenArea ({ e.getScreenX(), e.getScreenY(), 1, 1 });
+        if (auto* ed = findParentComponentOfClass<juce::AudioProcessorEditor>()) opts = opts.withParentComponent (ed);
+        m.showMenuAsync (opts, [this] (int r) { if (r == 1) centre(); });
         return;
     }
     rightClick = false;
@@ -651,7 +662,7 @@ void WobbleEditor::Content::paint (juce::Graphics& g)
     g.drawText ("WOBBLE-D", 16, 6, 200, 36, juce::Justification::left);
     g.setColour (col::dim);
     g.setFont (juce::FontOptions (11.0f));
-    g.drawText ("dubstep wobble bass  v0.1.1", 152, 18, 200, 16, juce::Justification::left);
+    g.drawText ("dubstep wobble bass  v0.1.2", 152, 18, 200, 16, juce::Justification::left);
     for (auto& s : sections)
     {
         g.setColour (col::dim);
@@ -703,12 +714,16 @@ WobbleEditor::WobbleEditor (WobbleProcessor& p) : AudioProcessorEditor (p), proc
     lfoView->setTooltip ("Draw the wobble. Click: add point · drag: move (Shift = off-grid) · right-click: delete · double-click a point: Curve / S-smooth / Hold step · drag the small ring on a line: bend it · drag the top triangles: loop section.");
     for (auto* c : { (juce::Component*) &gridBox, (juce::Component*) &presetBox, (juce::Component*) &randBtn, (juce::Component*) &loopAllBtn })
         content.addAndMakeVisible (c);
-    const std::pair<const char*, int> grids[] = { { "Grid 4", 4 }, { "Grid 8", 8 }, { "Grid 16", 16 }, { "Grid 32", 32 },
-                                                  { "Grid 3 (T)", 3 }, { "Grid 6 (T)", 6 }, { "Grid 12 (T)", 12 }, { "Grid 24 (T)", 24 } };
-    for (auto& gpair : grids) gridBox.addItem (gpair.first, gpair.second);
-    gridBox.setSelectedId (proc.shape.grid, juce::dontSendNotification);
-    gridBox.setTooltip ("Grid the points and loop markers lock to (steps per wobble cycle).");
-    gridBox.onChange = [this] { proc.shape.grid = gridBox.getSelectedId(); proc.shapeChanged(); lfoView->repaint(); };
+    for (int i = 0; i < wb::Shape::gridNoteNames().size(); ++i) gridBox.addItem ("Grid " + wb::Shape::gridNoteNames()[i], i + 1);
+    gridBox.setSelectedId (proc.shape.gridNote + 1, juce::dontSendNotification);
+    gridBox.setTooltip ("Grid step length in real note values (1/16 = each box is a 1/16 note). Rate sets the pattern length; greyed-out steps are longer than the pattern.");
+    gridBox.onChange = [this]
+    {
+        if (gridBox.getSelectedId() <= 0) return;
+        proc.shape.gridNote = gridBox.getSelectedId() - 1;
+        updateGrid (true);
+    };
+    updateGrid (false);
     presetBox.setTextWhenNothingSelected ("Shape presets");
     presetBox.addItemList (wb::Shape::presetNames(), 1);
     presetBox.onChange = [this]
@@ -716,7 +731,7 @@ WobbleEditor::WobbleEditor (WobbleProcessor& p) : AudioProcessorEditor (p), proc
         const int i = presetBox.getSelectedItemIndex();
         if (i < 0) return;
         auto s = wb::Shape::preset (wb::Shape::presetNames()[i]);
-        s.grid = proc.shape.grid;
+        s.grid = proc.shape.grid; s.gridNote = proc.shape.gridNote;
         proc.shape = s;
         proc.shapeChanged();
         lfoView->repaint();
@@ -949,6 +964,29 @@ void WobbleEditor::layoutContent()
     content.repaint();
 }
 
+// Grid = real note value. Steps per cycle follow the pattern length (Rate), so 1 Bar + Grid 1/16 = 16 boxes of 1/16.
+void WobbleEditor::updateGrid (bool force)
+{
+    const int rate = (int) proc.state.getRawParameterValue (id::rate)->load();
+    if (! force && rate == lastGridRate && proc.shape.gridNote + 1 == gridBox.getSelectedId() && proc.shape.grid == lastGridSteps) return;
+    lastGridRate = rate;
+    const double cycle = wb::rateBeats[juce::jlimit (0, 12, rate)];
+    auto& sh = proc.shape;
+    for (int i = 0; i < wb::Shape::gridNoteNames().size(); ++i)
+        gridBox.setItemEnabled (i + 1, wb::Shape::stepsFor (cycle, i) > 0);
+    int note = sh.gridNote;
+    if (wb::Shape::stepsFor (cycle, note) == 0)          // step longer than the pattern: use the longest step that fits
+        for (int i = 0; i < wb::Shape::gridNoteNames().size(); ++i)
+            if (wb::Shape::stepsFor (cycle, i) > 0 && (wb::Shape::stepsFor (cycle, note) == 0 || wb::Shape::gridNoteBeats (i) > wb::Shape::gridNoteBeats (note)))
+                note = i;
+    const int steps = juce::jmax (1, wb::Shape::stepsFor (cycle, note));
+    sh.gridNote = note;
+    if (sh.grid != steps) { sh.grid = steps; proc.shapeChanged(); }
+    lastGridSteps = sh.grid;
+    if (gridBox.getSelectedId() != note + 1) gridBox.setSelectedId (note + 1, juce::dontSendNotification);
+    lfoView->repaint();
+}
+
 void WobbleEditor::syncTargetButtons()
 {
     const int xt = (int) proc.state.getRawParameterValue (id::xTarget)->load();
@@ -968,7 +1006,7 @@ void WobbleEditor::timerCallback()
     syncTargetButtons();
     const auto seedTxt = "REROLL #" + juce::String ((int) proc.state.getRawParameterValue (id::seed)->load());
     if (rerollBtn.getButtonText() != seedTxt) rerollBtn.setButtonText (seedTxt);
-    if (gridBox.getSelectedId() != proc.shape.grid) gridBox.setSelectedId (proc.shape.grid, juce::dontSendNotification);
+    updateGrid (false);
 }
 
 bool WobbleEditor::isInterestedInFileDrag (const juce::StringArray& files)

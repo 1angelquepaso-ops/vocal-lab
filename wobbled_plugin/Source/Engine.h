@@ -145,7 +145,7 @@ private:
     // wobble clock
     double ph = 0, cyclePos = 0, appliedBeats = 0.5, internalBeats = 0, prevGridPos = 0;
     double lastPpqEnd = 0;
-    bool wasPlaying = false, firstBlock = true, hardSetPending = false, phraseReset = false;
+    bool wasPlaying = false, firstBlock = true, hardSetPending = false, phraseReset = false, snapLfo = false;
     float slewState = 0.5f, slewState2 = 0.5f, lastFinal = 0.5f;
     double xfOldPos = 0, xfOldCps = 0, lastCps = 0; int xfCount = 1 << 30, xfLen = 384;
     double blockPpq = 0;
@@ -175,6 +175,25 @@ private:
         const double bpm = host.bpm > 1 ? host.bpm : 120.0;
         bps = bpm / 60.0 / fs;
 
+        // FL pressed play / started an export: start from a clean, repeatable state so every
+        // playback and every render of the same song is identical (no leftovers from live tweaking)
+        const bool transportStart = host.playing && host.hasPpq && ! wasPlaying;
+        const bool fresh = firstBlock || transportStart;
+        if (transportStart)
+        {
+            bool anyVoice = false;
+            for (auto& v : voices) anyVoice = anyVoice || v.active;
+            if (! anyVoice)
+            {
+                resetFilters();
+                if (os) os->reset();
+                held.clear(); monoVoice = -1;
+                lastVelocity = 1.0f;
+            }
+            ph = 0; internalBeats = 0; prevGridPos = host.ppq;
+            snapLfo = true;
+        }
+
         const float knobMs = 15.0f;
         for (auto* s : { &sCut, &sRes, &sDrive, &sDCut, &sDVol, &sDPitch, &sDDrive, &sDBoost, &sBoostF, &sBoostG, &sWidth, &sVol, &sSub, &sChaos })
             s->setTime (knobMs, fs);
@@ -192,8 +211,9 @@ private:
             xAmt[t].target = xs ? p.xyX : 0.0f;  xAmt[t].setTime (xs ? p.xyGlide : juce::jmax (p.xyGlide, 50.0f), fs);
             yAmt[t].target = ys ? p.xyY : 0.0f;  yAmt[t].setTime (ys ? p.xyGlide : juce::jmax (p.xyGlide, 50.0f), fs);
         }
-        if (firstBlock)
+        if (fresh)
         {
+            bendS.reset (bendS.target);
             for (auto* s : { &sCut, &sRes, &sDrive, &sDCut, &sDVol, &sDPitch, &sDDrive, &sDBoost, &sBoostF, &sBoostG, &sWidth, &sVol, &sSub, &sChaos })
                 s->reset (s->target);
             for (int t = 0; t < 4; ++t) { xAmt[t].reset (xAmt[t].target); yAmt[t].reset (yAmt[t].target); }
@@ -203,7 +223,7 @@ private:
         }
         // static EQ: glide per block
         auto glideTo = [] (float& v, float t, float a) { v += (t - v) * a; };
-        const float a = firstBlock ? 1.0f : 0.35f;
+        const float a = fresh ? 1.0f : 0.35f;
         glideTo (eqLowCut, p.lowCut, a); glideTo (eqLow, p.lowGain, a); glideTo (eqMid, p.midGain, a);
         glideTo (eqMidF, p.midFreq, a); glideTo (eqHigh, p.highGain, a); glideTo (eqHighCut, p.highCut, a);
         glideTo (eqSubF, p.subFreq, a); glideTo (eqBoostQ, p.boostQ, a);
@@ -463,7 +483,9 @@ private:
 
         // after a hard re-sync (quantize, playlist loop, phrase restart) the old wobble keeps running
         // for a few ms and crossfades into the new one, so nothing ever jumps
-        if (hardSet) { xfOldPos = prevCyclePos; xfOldCps = lastCps; xfCount = 0; }
+        if (hardSet && ! snapLfo) { xfOldPos = prevCyclePos; xfOldCps = lastCps; xfCount = 0; }
+        const bool snapNow = snapLfo && (hardSet || ! songLock);
+        if (snapNow) xfCount = xfLen;
         lastCps = cpsNow;
 
         const float c = juce::jlimit (-1.0f, 1.0f, sChaos.next() + yChaos);
@@ -482,6 +504,7 @@ private:
         // smooth: two-pole slew (min 1 ms per pole) so even hard steps / gates never pop
         const float slewMs = 1.0f + p.smooth * 20.0f;
         const float sc = (float) (1.0 - std::exp (-1.0 / (slewMs * 0.001 * fs)));
+        if (snapNow) { slewState = slewState2 = v; snapLfo = false; }   // clean start: no glide from old state
         slewState += (v - slewState) * sc;
         slewState2 += (slewState - slewState2) * sc;
         float L = slewState2;

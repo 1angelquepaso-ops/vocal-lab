@@ -23,7 +23,22 @@ struct Shape
     static constexpr int tableSize = 2048;
     std::vector<ShapePoint> pts;
     float loopStart = 0.0f, loopEnd = 1.0f;
-    int grid = 16;          // grid divisions per cycle (4, 8, 16, 32, or triplet 6, 12, 24)
+    int grid = 4;           // grid steps per cycle (derived from gridNote + the Rate / pattern length)
+    int gridNote = 3;       // index into gridNoteNames: the musical length of one grid step
+
+    static juce::StringArray gridNoteNames() { return { "1/4", "1/8", "1/16", "1/32", "1/8T", "1/16T", "1/32T" }; }
+    static double gridNoteBeats (int i)
+    {
+        static const double b[] = { 1.0, 0.5, 0.25, 0.125, 1.0 / 3.0, 1.0 / 6.0, 1.0 / 12.0 };
+        return b[juce::jlimit (0, 6, i)];
+    }
+    // how many steps of this note value fit in one cycle of `cycleBeats` (0 = doesn't fit)
+    static int stepsFor (double cycleBeats, int note)
+    {
+        const double n = cycleBeats / gridNoteBeats (note);
+        if (n < 0.999) return 0;
+        return juce::jlimit (1, 64, (int) std::lround (n));
+    }
 
     void sort() { std::sort (pts.begin(), pts.end(), [] (auto& a, auto& b) { return a.x < b.x; }); }
 
@@ -120,6 +135,7 @@ struct Shape
         t.setProperty ("loopStart", loopStart, nullptr);
         t.setProperty ("loopEnd", loopEnd, nullptr);
         t.setProperty ("grid", grid, nullptr);
+        t.setProperty ("gridNote", gridNote, nullptr);
         for (auto& p : pts)
         {
             juce::ValueTree c ("P");
@@ -137,7 +153,8 @@ struct Shape
         if (! t.isValid() || t.getNumChildren() == 0) return preset ("Sine");
         s.loopStart = (float) t.getProperty ("loopStart", 0.0f);
         s.loopEnd = (float) t.getProperty ("loopEnd", 1.0f);
-        s.grid = (int) t.getProperty ("grid", 16);
+        s.grid = (int) t.getProperty ("grid", 4);
+        s.gridNote = (int) t.getProperty ("gridNote", 3);
         for (auto c : t)
             s.pts.push_back ({ (float) c.getProperty ("x"), (float) c.getProperty ("y"),
                                (float) c.getProperty ("c", 0.0f), (Seg) (int) c.getProperty ("s", 0) });
