@@ -323,6 +323,28 @@ static int selftest()
         const double s = clickScore (r.L, 220.0, fs, skip, (long) r.L.size());
         check ("Sample loop is click-free", s < 6, "score " + juce::String (s, 2) + " (2-partial source)");
     }
+    // 10a) editor-style background load (what drag-and-drop / LOAD SAMPLE use) + closing WOBBLE-D mid-load
+    {
+        const auto tmp = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("wb_test_A2.wav");
+        WobbleProcessor p; bool done = false, ok = false;
+        p.loadSampleAsync (tmp, [&] (bool k, juce::String) { done = true; ok = k; });
+        const bool returnedFast = p.loadingSample.load();          // call returned before the work finished
+        const auto t0 = juce::Time::getMillisecondCounter();
+        while (! done && juce::Time::getMillisecondCounter() - t0 < 10000)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+        const int root = (int) p.state.getRawParameterValue (id::rootKey)->load();
+        const int src = (int) p.state.getRawParameterValue (id::source)->load();
+        check ("Background sample load (drop / LOAD button)", done && ok && returnedFast && root == 45 && src == 0 && p.sampleForDisplay() != nullptr,
+               juce::String ("root ") + juce::String (root) + ", source " + juce::String (src));
+        {
+            auto q = std::make_unique<WobbleProcessor>();
+            q->loadSampleAsync (tmp, [] (bool, juce::String) {});
+            q.reset();                                              // close the plugin while it loads
+        }
+        const auto t1 = juce::Time::getMillisecondCounter();
+        while (juce::Time::getMillisecondCounter() - t1 < 1500) juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+        check ("Closing WOBBLE-D mid-load is safe", true, "no crash");
+    }
     // 10b) save project + reopen: every knob, the drawn shape, loop markers, grid and the sample come back
     {
         const auto tmp = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("wb_test_A2.wav");

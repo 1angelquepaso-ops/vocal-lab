@@ -197,9 +197,10 @@ void SampleView::refresh()
         }
         repaint();
     }
-    if (st != lastStart || ln != lastLen || lp != lastLoop || rv != lastRev || src != lastSrc)
+    const bool loading = proc.loadingSample.load();
+    if (st != lastStart || ln != lastLen || lp != lastLoop || rv != lastRev || src != lastSrc || loading != lastLoading)
     {
-        lastStart = st; lastLen = ln; lastLoop = lp; lastRev = rv; lastSrc = src;
+        lastStart = st; lastLen = ln; lastLoop = lp; lastRev = rv; lastSrc = src; lastLoading = loading;
         repaint();
     }
 }
@@ -213,6 +214,13 @@ void SampleView::paint (juce::Graphics& g)
     g.drawRoundedRectangle (r.reduced (0.5f), 6.0f, 1.0f);
     const int src = (int) proc.state.getRawParameterValue (id::source)->load();
 
+    if (proc.loadingSample.load())
+    {
+        g.setColour (col::lime);
+        g.setFont (juce::FontOptions (15.0f));
+        g.drawFittedText ("Loading sample...", getLocalBounds(), juce::Justification::centred, 1);
+        return;
+    }
     if (shown == nullptr)
     {
         g.setColour (col::dim);
@@ -662,7 +670,7 @@ void WobbleEditor::Content::paint (juce::Graphics& g)
     g.drawText ("WOBBLE-D", 16, 6, 200, 36, juce::Justification::left);
     g.setColour (col::dim);
     g.setFont (juce::FontOptions (11.0f));
-    g.drawText ("dubstep wobble bass  v0.1.2", 152, 18, 200, 16, juce::Justification::left);
+    g.drawText ("dubstep wobble bass  v0.1.3", 152, 18, 200, 16, juce::Justification::left);
     for (auto& s : sections)
     {
         g.setColour (col::dim);
@@ -1035,7 +1043,11 @@ void WobbleEditor::openChooser()
 
 void WobbleEditor::loadFile (const juce::File& f)
 {
-    juce::String err;
-    if (! proc.loadSample (f, err)) juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "WOBBLE-D", err);
-    sampleView->refresh();
+    juce::Component::SafePointer<WobbleEditor> safe (this);
+    proc.loadSampleAsync (f, [safe] (bool ok, juce::String err)
+    {
+        if (! ok) juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "WOBBLE-D", err);
+        if (safe != nullptr) safe->sampleView->refresh();
+    });
+    sampleView->repaint();
 }

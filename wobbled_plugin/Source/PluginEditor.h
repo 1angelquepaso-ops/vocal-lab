@@ -111,7 +111,7 @@ private:
     WobbleProcessor& proc;
     const wb::SampleData* shown = nullptr;
     std::vector<std::pair<float, float>> peaks;
-    float lastStart = -1, lastLen = -1; bool lastLoop = false, lastRev = false; int lastSrc = -1;
+    float lastStart = -1, lastLen = -1; bool lastLoop = false, lastRev = false, lastLoading = false; int lastSrc = -1;
 };
 
 class LfoView : public juce::Component, public juce::SettableTooltipClient

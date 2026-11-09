@@ -8,7 +8,7 @@ class WobbleProcessor : public juce::AudioProcessor
 {
 public:
     WobbleProcessor();
-    ~WobbleProcessor() override = default;
+    ~WobbleProcessor() override { alive->store (false); }
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
@@ -38,7 +38,9 @@ public:
     void shapeChanged();
 
     // ---- sample (message thread)
-    bool loadSample (const juce::File& f, juce::String& error);
+    bool loadSample (const juce::File& f, juce::String& error, bool touchParams = true);   // synchronous (tests, project load)
+    void loadSampleAsync (const juce::File& f, std::function<void (bool, juce::String)> done);   // editor
+    std::atomic<bool> loadingSample { false };
     void clearSample();
     const wb::SampleData* sampleForDisplay() const { return latestSample; }
     bool autoTrim = true, autoNormalize = true;
@@ -52,6 +54,10 @@ public:
 
 private:
     static juce::File sampleFolder();
+    static std::unique_ptr<wb::SampleData> prepareSample (const juce::File&, bool trim, bool norm, juce::String& error);
+    void finishLoad (std::unique_ptr<wb::SampleData>, bool touchParams);
+    void setParamWithGesture (const char* pid, float plainValue);
+    std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>> (true);
     void publishSample (std::unique_ptr<wb::SampleData> s);
 
     juce::SpinLock tableLock;

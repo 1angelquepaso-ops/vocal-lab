@@ -152,15 +152,16 @@ void WobbleProcessor::clearSample()
     state.state.removeChild (state.state.getChildWithName ("SAMPLE"), nullptr);
 }
 
-bool WobbleProcessor::loadSample (const juce::File& fileIn, juce::String& error)
+// Decode + trim + normalise + detect root + copy to Documents\WOBBLE-D\Samples. Pure work: safe on any thread.
+std::unique_ptr<SampleData> WobbleProcessor::prepareSample (const juce::File& fileIn, bool trim, bool norm, juce::String& error)
 {
     juce::AudioFormatManager fm;
     fm.registerBasicFormats();
     std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (fileIn));
-    if (! r) { error = "Can't read " + fileIn.getFileName(); return false; }
+    if (! r) { error = "Can't read " + fileIn.getFileName(); return nullptr; }
     const auto maxLen = (juce::int64) (r->sampleRate * 60.0);
     const int n = (int) juce::jmin (r->lengthInSamples, maxLen);
-    if (n < 64) { error = "Sample is too short"; return false; }
+    if (n < 64) { error = "Sample is too short"; return nullptr; }
 
     auto s = std::make_unique<SampleData>();
     s->fs = r->sampleRate;
@@ -170,7 +171,7 @@ bool WobbleProcessor::loadSample (const juce::File& fileIn, juce::String& error)
     s->buf.copyFrom (0, 0, tmp, 0, 0, n);
     s->buf.copyFrom (1, 0, tmp, tmp.getNumChannels() > 1 ? 1 : 0, 0, n);
 
-    if (autoTrim)
+    if (trim)
     {
         const float th = 0.001f;
         int a = 0, b = n - 1;
@@ -186,20 +187,17 @@ bool WobbleProcessor::loadSample (const juce::File& fileIn, juce::String& error)
             s->buf = std::move (t);
         }
     }
-    if (autoNormalize)
+    if (norm)
     {
         const float pk = s->buf.getMagnitude (0, s->buf.getNumSamples());
         if (pk > 1.0e-5f) s->buf.applyGain (0.891f / pk);
     }
-
-    // mono mix for pitch detection
     {
         const int m = s->buf.getNumSamples();
         std::vector<float> mono ((size_t) m);
         for (int i = 0; i < m; ++i) mono[(size_t) i] = 0.5f * (s->buf.getSample (0, i) + s->buf.getSample (1, i));
         s->detectedNote = detectMidiNote (mono.data(), m, s->fs);
     }
-
     // keep a copy in Documents\WOBBLE-D\Samples so presets never lose the file
     juce::File stored = fileIn;
     const auto folder = sampleFolder();
@@ -212,17 +210,58 @@ bool WobbleProcessor::loadSample (const juce::File& fileIn, juce::String& error)
     }
     s->name = fileIn.getFileNameWithoutExtension();
     s->path = stored.getFullPathName();
-    const double note = s->detectedNote;
+    return s;
+}
 
+void WobbleProcessor::setParamWithGesture (const char* pid, float plainValue)
+{
+    if (auto* p = state.getParameter (pid))
+    {
+        p->beginChangeGesture();
+        p->setValueNotifyingHost (p->convertTo0to1 (plainValue));
+        p->endChangeGesture();
+    }
+}
+
+// Message thread. touchParams = false when FL is reopening a project (never change parameters then).
+void WobbleProcessor::finishLoad (std::unique_ptr<SampleData> s, bool touchParams)
+{
+    const double note = s->detectedNote;
     auto t = state.state.getOrCreateChildWithName ("SAMPLE", nullptr);
     t.setProperty ("path", s->path, nullptr);
     publishSample (std::move (s));
+    if (! touchParams) return;
+    setParamWithGesture (id::source, 0.0f);
+    if (note > 0) setParamWithGesture (id::rootKey, (float) juce::jlimit (0, 127, (int) std::lround (note)));
+}
 
-    if (auto* p = state.getParameter (id::source)) p->setValueNotifyingHost (p->convertTo0to1 (0.0f));
-    if (note > 0)
-        if (auto* p = state.getParameter (id::rootKey))
-            p->setValueNotifyingHost (p->convertTo0to1 ((float) juce::jlimit (0, 127, (int) std::lround (note))));
+bool WobbleProcessor::loadSample (const juce::File& fileIn, juce::String& error, bool touchParams)
+{
+    auto s = prepareSample (fileIn, autoTrim, autoNormalize, error);
+    if (! s) return false;
+    finishLoad (std::move (s), touchParams);
     return true;
+}
+
+// Used by the editor: heavy work on a background thread, then the hand-off happens later on the message
+// thread - never inside FL's drag-and-drop or file-dialog callback (that crashed FL 24.2).
+void WobbleProcessor::loadSampleAsync (const juce::File& f, std::function<void (bool, juce::String)> done)
+{
+    loadingSample = true;
+    auto aliveFlag = alive;
+    const bool trim = autoTrim, norm = autoNormalize;
+    juce::Thread::launch ([this, aliveFlag, f, trim, norm, done]
+    {
+        juce::String err;
+        std::shared_ptr<SampleData> holder (prepareSample (f, trim, norm, err).release());
+        juce::MessageManager::callAsync ([this, aliveFlag, holder, err, done]
+        {
+            if (! aliveFlag->load()) return;
+            loadingSample = false;
+            if (holder) finishLoad (std::make_unique<SampleData> (std::move (*holder)), true);
+            if (done) done (holder != nullptr, err);
+        });
+    });
 }
 
 // ------------------------------------------------------------------ patch actions
@@ -230,7 +269,11 @@ void WobbleProcessor::initPatch()
 {
     for (auto* p : getParameters())
         if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
+        {
+            rp->beginChangeGesture();
             rp->setValueNotifyingHost (rp->getDefaultValue());
+            rp->endChangeGesture();
+        }
     shape = Shape::preset ("Sine");
     shapeChanged();
     clearSample();
@@ -241,7 +284,7 @@ void WobbleProcessor::rerollChaos()
     if (auto* p = state.getParameter (id::seed))
     {
         const int cur = (int) p->convertFrom0to1 (p->getValue());
-        p->setValueNotifyingHost (p->convertTo0to1 ((float) ((cur + 1 + juce::Random::getSystemRandom().nextInt (97)) % 10000)));
+        setParamWithGesture (id::seed, (float) ((cur + 1 + juce::Random::getSystemRandom().nextInt (97)) % 10000));
     }
 }
 
@@ -270,17 +313,10 @@ void WobbleProcessor::setStateInformation (const void* data, int size)
     state.replaceState (st);
     if (path.isNotEmpty())
     {
-        // reload without re-detecting the root key / touching params (keep the saved values)
-        const auto saved = state.copyState();
+        // reload the sample but never touch parameters while FL is opening a project
         juce::String err;
-        const bool oldTrim = autoTrim, oldNorm = autoNormalize;
         juce::File f (path);
-        if (f.existsAsFile())
-        {
-            loadSample (f, err);
-            state.replaceState (saved);   // restore root key / source exactly as saved
-        }
-        autoTrim = oldTrim; autoNormalize = oldNorm;
+        if (f.existsAsFile()) loadSample (f, err, false);
     }
     else publishSample (nullptr);
 }

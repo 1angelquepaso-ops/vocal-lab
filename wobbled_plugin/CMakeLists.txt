@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(Wobbled VERSION 0.1.2)
+project(Wobbled VERSION 0.1.3)
 
 include(FetchContent)
 FetchContent_Declare(JUCE
@@ -39,6 +39,6 @@ target_link_libraries(Wobbled
 juce_add_console_app(wb_render PRODUCT_NAME "wb_render")
 target_sources(wb_render PRIVATE Tools/render.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp)
 target_compile_features(wb_render PRIVATE cxx_std_17)
-target_compile_definitions(wb_render PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JucePlugin_Name="WOBBLE-D")
+target_compile_definitions(wb_render PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1 JucePlugin_Name="WOBBLE-D")
 target_link_libraries(wb_render PRIVATE juce::juce_audio_utils juce::juce_audio_formats juce::juce_dsp juce::juce_core
     PUBLIC juce::juce_recommended_config_flags)
