@@ -26,6 +26,7 @@ jobs:
           $exe = Get-ChildItem -Recurse build -Filter mw_capture.exe | Select-Object -First 1
           & $exe.FullName
           if ($LASTEXITCODE -ne 1) { throw "unexpected exit code $LASTEXITCODE" }
+          exit 0
 
       - name: Package
         shell: pwsh
