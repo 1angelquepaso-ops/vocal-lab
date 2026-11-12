@@ -2,7 +2,7 @@ name: Build MEX-EQ
 
 on:
   push:
-    branches: [main]
+    branches: [main, mexeq]
     paths: ['mexeq_plugin/**', '.github/workflows/mexeq.yml']
   workflow_dispatch:
 
