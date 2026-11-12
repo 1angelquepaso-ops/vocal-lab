@@ -52,6 +52,10 @@
 | Placed a pattern clip in FL by accident while closing a dialog | Cancel the New project dialog carefully; don't click the playlist |
 | Explorer is click-only for Claude (no typing/right-click) | Use Extract all → Browse; Angel clicks UAC prompts |
 | FL Plugin Manager can't be controlled by Claude | Angel clicks "Find installed plugins" |
+| RBJ/bilinear filters crushed DREAMMIC's top octave (up to 19 dB off the designed curve) | Use MEX-EQ matched-magnitude design (`Design.h`); build HQ FIRs from the analog curve |
+| Level match off by up to 6 dB on bright mics | Measure loudness K-weighted (BS.1770) with a speech-shaped test signal, not plain RMS of white noise |
+| Same DSP copied into two plugins drifts apart | Share headers via a CMake include dir (`MEXCORE_DIR`) + add them to the other workflow's `paths:` |
+| New choice options broke nothing in old projects | Keep gear lists append-only (projects store the index); group them in the editor instead |
 
 ## Parity rule (MIRRORWALL)
 Python reference DSP (`mirrorwall/dsp.py`) and C++ twin (`mirrorwall_plugin/Source/Chain.h`) must stay identical:

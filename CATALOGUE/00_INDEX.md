@@ -12,7 +12,7 @@ the data behind it, what we tested, and where each one goes next. Use it to rebu
 | 2 | **vocal-lab Harmonizer** | Theory-based harmony generator: load a dry vocal chunk (+ optional beat for analysis), generate harmonies one at a time, drag stems into FL | v2 installed | `1angelquepaso-ops/vocal-lab` (`vocal_lab/`, `plugin/`) | `latest` |
 | 3 | **PIRATA** | Chord + MIDI extractor for samples, Simple / As-played / Rich chords, melody layer (complement, counter, amplify, random, arp), grand-piano preview, drag MIDI | v1 installed | `vocal-lab` (`pirata/`, `pirata_plugin/`) | `pirata-latest` |
 | 4 | **MIRRORWALL** | Vocal chain emulator: 8 stock chains fitted from our own old vocals + EMULATOR (reference acapella → new preset), autotune with key/scale, tweak knobs, mic match | v1 (offline) installed | `vocal-lab` (`mirrorwall/`, `mirrorwall_plugin/`) | `mirrorwall-latest` |
-| 5 | **DREAMMIC** | Real-time mic + preamp emulator: 10 vocal mics, 6 preamps, Distance / Warmth / High-pass / Air, LIVE + HQ modes | v1 installed | `vocal-lab` (`dreammic_plugin/`) | `dreammic-latest` |
+| 5 | **DREAMMIC** | Real-time mic + preamp emulator: 19 vocal mics (+ their switches), 13 preamps, tracking comp (MIRRORWALL's fitted models) + de-esser, Auto input, Level match, presets, LIVE + HQ | v2 built (Nov 2026) | `vocal-lab` (`dreammic_plugin/`) | `dreammic-latest` |
 
 Install folder on Angel's PC: `C:\Program Files\Common Files\VST3\` → then FL: Options → Manage plugins → Find installed plugins.
 Audio material lives in `E:\EXTRACTION\IDEAS` (acapellas, raw vocals, stems).

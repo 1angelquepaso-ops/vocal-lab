@@ -3,7 +3,8 @@ name: Build DREAMMIC
 on:
   push:
     branches: [main]
-    paths: ['dreammic_plugin/**', '.github/workflows/dreammic.yml']
+    paths: ['dreammic_plugin/**', '.github/workflows/dreammic.yml',
+            'mirrorwall_plugin/Source/Live.h', 'mirrorwall_plugin/Source/Design.h', 'mirrorwall_plugin/Source/GData.h']
   workflow_dispatch:
 
 permissions:
@@ -18,7 +19,7 @@ jobs:
       - name: Build VST3 + test tool
         run: |
           cmake -S dreammic_plugin -B build -A x64
-          cmake --build build --config Release --target Dreammic_VST3 dm_render
+          cmake --build build --config Release --target Dreammic_VST3 dm_render dm_test
 
       - name: Smoke-test (LIVE and HQ render)
         shell: pwsh
@@ -28,6 +29,15 @@ jobs:
           & $r.FullName t.wav live.wav mode=0 mic=0 pre=0
           & $r.FullName t.wav hq.wav mode=1 mic=5 pre=2
           if (-not (Test-Path hq.wav)) { throw "render failed" }
+          & $r.FullName t.wav v2.wav mode=0 mic=18 pre=12 comptype=3 deess=5 match=1 autoin=1 lowcut=1
+          if (-not (Test-Path v2.wav)) { throw "v2 render failed" }
+
+      - name: Numeric tests (curves, LIVE vs HQ, preamps, comps, level match, old projects, presets)
+        shell: pwsh
+        run: |
+          $t = Get-ChildItem -Recurse build -Filter dm_test.exe | Select-Object -First 1
+          & $t.FullName | Tee-Object dm_test_report.txt
+          if (Select-String -Path dm_test_report.txt -Pattern "FAIL") { throw "dm_test failed" }
 
       - name: Package
         shell: pwsh
@@ -44,6 +54,7 @@ jobs:
           name: DREAMMIC (latest build)
           body: |
             Download **DREAMMIC-Windows.zip**, unzip it, and copy the `DREAMMIC.vst3` folder into
-            `C:\Program Files\Common Files\VST3\`. Rescan plugins in FL Studio.
+            `C:\Program Files\Common Files\VST3\` (replace the old one). Same plugin, so no rescan needed;
+            old projects open with the same settings (new v2 features start switched off).
           files: DREAMMIC-Windows.zip
           make_latest: false

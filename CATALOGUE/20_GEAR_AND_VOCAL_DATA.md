@@ -54,6 +54,16 @@ Full JSONs: `vocal-lab/mirrorwall/presets/*.json`.
 | M-Ref Tube | Manley Reference Cardioid | +3 @4.5k, +4 @10k, bright/forward |
 | S7 Classic | Shure SM7A (original) | thick lows, +2 @4.5k, −6 shelf 9k, rolls ~14k, dynamic |
 | MJ-50 | Mojave MA-50 | +2.5 @5k, +1.5 @10k, FET |
+| S7B Dynamic (v2) | Shure SM7B | near-flat, +1.5 @3.5k, −3 shelf 9k; **Bass roll** (−6 shelf 250) + **Presence** (+4.5 @5k) switches |
+| N103 (v2) | Neumann TLM 103 | flat to 5k, broad +4 @9.5k, FET transformerless |
+| A414 (v2) | AKG C414 XLII | broad +3.5 @7k presence; Low cut 80 |
+| E-20 Dynamic (v2) | Electro-Voice RE20 | flat broadcast, +1 @4.5k, −3 shelf 11k; proximity ×0.25 (Variable-D); Bass roll |
+| S-421 Dynamic (v2) | Sennheiser MD 421 | −1.5 @1.5k, +4 @5k, −4 shelf 13k; Bass roll |
+| S58 Live (v2) | Shure SM58 | HP 80, +5 @5k, −5 shelf 10k, rolls ~15k |
+| R-NT1 (v2) | Rode NT1-A | +4.5 @12k, slight −1 @4k |
+| N47 FET (v2) | Neumann U47 fet | +1 low shelf, +1.5 @4.5k, −2 shelf 12k; Low cut 140 |
+| R-121 Ribbon (v2) | Royer R-121 | figure-8, flat mids, −4 shelf 8k, rolls ~15k, big proximity |
+Mic switches added in v2 to existing models: SM7A Bass roll + Presence, U67 Low cut, U87 Low cut 80, M149 Low cut 80.
 ## DREAMMIC preamps
 | Name | Modelled on | Behaviour |
 |---|---|---|
@@ -63,5 +73,14 @@ Full JSONs: `vocal-lab/mirrorwall/presets/*.json`.
 | A-512 | API 512c | firm op-amp knee, +1 @2k forward mids |
 | MV-Box Tube | Manley VOXBOX | tube, +0.7 @250, +1 above 12k |
 | S-4K E | SSL 4000 E | clean, +0.8 above 10k |
+| TF-V76 Tube (v2) | Telefunken V76 | dark thick tube, transformer lows, −2 shelf 9k |
+| EMI-TG (v2) | EMI TG12345 | console grit (3rd harmonic), +1.2 @1.5k honk |
+| H-69 (v2) | Helios 69 | +1.5 @2.8k bite, transformer |
+| FC-ISA (v2) | Focusrite ISA 110 | sweet clean class-A, +0.8 air @14k |
+| HV-Clean (v2) | Millennia HV-3 | transparent: 0.3 % THD at full Warmth |
+| RN-Silk (v2) | Rupert Neve Portico (Silk) | heavy transformer, +1 shelf from 6k |
+| TT-MP1 Tube (v2) | Tube-Tech MP1A | smooth tube, small lifts at both ends |
+Measured THD/H2/H3 per preamp: 14_DREAMMIC.md.
 Sources used: Sound On Sound + Recording Magazine (MA-50), Samson (C01U Pro), Front End Audio (C-800G),
 Recordinghacks (ELA M 251), Producer Hive (U47/U67/U87), Shure SM7A guide.
+v2 mics/preamps: modelled from published response charts + well-known character (no captures yet) — same basis as v1.

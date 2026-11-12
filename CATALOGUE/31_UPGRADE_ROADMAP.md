@@ -15,4 +15,4 @@
 | Harmonizer | call & response + choir in UI; voice-clone voices instead of pitch-shifted; skin |
 | PIRATA | .m4a input; optional stem separation; edit chords in the roll; swing/humanise export; skin |
 | MIRRORWALL | 2.0 live (above); capture-based stages (RVox, C-type comps, Avalon); paired-mode fitting UI; wider harmony stacks; preset share/export; skin |
-| DREAMMIC | capture-based mic + preamp models; SM7A presence/bass switches; save/load presets; skin |
+| DREAMMIC | ~~MEX-EQ filters, more mics/preamps, mic switches, presets, comp/de-ess, level match~~ (v2 done); capture-based mic + preamp models; skin |
