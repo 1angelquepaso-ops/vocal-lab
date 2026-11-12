@@ -58,8 +58,11 @@ public:
     int scaleIndex = 1;                   // major, minor, harmonic minor, phrygian, chromatic
     double tuneSpeed = -1, tuneAmount = -1, tuneHumanize = -1;   // <0 = preset default
     std::atomic<double> knobComp { 1 }, knobReverb { 1 }, knobDelay { 1 }, knobFx { 1 }, knobDeess { 1 },
-                        knobDrive { 0 }, knobOut { 0 }, knobGate { 1 }, inGainDb { 0 };
-    std::atomic<bool> autoInput { true };
+                        knobDrive { 0 }, knobOut { 0 }, knobGate { 1 }, inGainDb { 0 },
+                        knobTape { 0 }, knobAir { 0 };
+    std::atomic<bool> autoInput { true }, tape30 { false }, lowLatency { false };
+    std::atomic<float> meterIn { -100 }, meterGr { 0 }, meterOut { -100 };
+    void setLowLatency (bool on) { lowLatency = on; rebuildEngine(); }
     int verbType = 0;                     // 0 = room (as fitted), 1 = plate
     bool hearProcessed = true;
     int micIndex = 1;                     // 0 = off, else index into the mic profiles

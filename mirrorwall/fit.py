@@ -50,6 +50,21 @@ def quick(st):
     return width, tail, spread
 
 
+def crest(st):
+    """Transient shape: median (peak - RMS) dB over active 50 ms frames. Fast compressors (FET) shave
+    peaks and lower it; slow/opto ones let the front of each word through and keep it higher."""
+    m = st if st.ndim == 1 else st.mean(1)
+    hop = int(0.05 * SR)
+    n = len(m) // hop
+    if n < 4:
+        return np.nan
+    fr = m[: n * hop].reshape(n, hop)
+    rms = 20 * np.log10(np.sqrt((fr ** 2).mean(1)) + 1e-12)
+    pk = 20 * np.log10(np.abs(fr).max(1) + 1e-12)
+    act = rms > np.percentile(rms, 95) - 20
+    return float(np.median((pk - rms)[act])) if act.any() else np.nan
+
+
 def sib_index(mono):
     sos = butter(4, [5000, 10000], "bandpass", fs=SR, output="sos")
     seg = mono[: SR * 90]
@@ -80,6 +95,7 @@ def target_from(ref_metrics_list):
         floor=float(np.median([r["floor"] for r in R])),
         lag=float(np.median(lags)) if lags else 0.0,
         rms=float(np.median([r["rms"] for r in R])),
+        crest=float(np.median([r["crest"] for r in R if np.isfinite(r.get("crest", np.nan))] or [np.nan])),
     )
 
 
@@ -94,6 +110,7 @@ def measure_ref(path):
         x = np.repeat(x, 2, 1)
     m["curve"] = curve(x)
     m["rms"] = dsp.active_rms_db(x)
+    m["crest"] = crest(x)
     return m
 
 
@@ -148,18 +165,37 @@ def fit_preset(raw, T, name="Custom", pre_type="tube", log=print):
              out_rms_db=T["rms"], ceiling=-1.0)
     dry = lambda p: dict(p, dbl=dict(wet=0), slap=dict(p["slap"], wet=0), verb=dict(p["verb"], wet=0))
 
-    # 1) compression depth -> loudness spread
-    best = None
-    for ot in (-14, -18, -22, -26, -30, -60):
+    # 1) compression: try all four measured styles (+ the classic opto->FET chain) and keep the one that
+    #    lands the reference's loudness spread AND transient shape (crest) best
+    base = dict(P, opto=dict(P["opto"], on=False), fet=dict(P["fet"], on=False),
+                vca=dict(thr=-20.0, ratio=4.0, fast=False, release=300.0, on=False),
+                lev=dict(comp=-20.0, ratio=6.0, knee=24.0, gate=-90.0, on=False))
+    cands = []
+    for ot in (-14, -18, -22, -26, -30, -60):                       # CLA-2A -> CLA-76 chain (1.x behaviour)
         for ft in (-8, -12, -16, -60):
-            p = dict(P, opto=dict(P["opto"], thr=float(ot), on=ot > -60),
-                     fet=dict(P["fet"], thr=float(ft), on=ft > -60))
-            _, _, sp = quick(dsp.process(raw, dry(p)))
-            e = abs(sp - T["spread"])
-            if best is None or e < best[0]:
-                best = (e, p, sp)
+            cands.append(("opto+fet", dict(base, opto=dict(P["opto"], thr=float(ot), on=ot > -60),
+                                           fet=dict(P["fet"], thr=float(ft), on=ft > -60))))
+    for ot in (-18, -22, -26, -30, -34):                            # CLA-2A alone
+        cands.append(("opto (CLA-2A)", dict(base, opto=dict(P["opto"], thr=float(ot), on=True))))
+    for ft in (-10, -14, -18, -22):                                 # CLA-76 alone
+        cands.append(("fet (CLA-76)", dict(base, fet=dict(P["fet"], thr=float(ft), on=True))))
+    for vt in (-10, -15, -20, -25):                                 # SSL G channel
+        for fast in (False, True):
+            cands.append(("vca (SSL)", dict(base, vca=dict(base["vca"], thr=float(vt), fast=fast, on=True))))
+    for lc in (-8, -14, -20, -26):                                  # RVox
+        cands.append(("lev (RVox)", dict(base, lev=dict(base["lev"], comp=float(lc), on=True))))
+    have_crest = np.isfinite(T.get("crest", np.nan))
+    best = None
+    for style, p in cands:
+        st = dsp.process(raw, dry(p))
+        _, _, sp = quick(st)
+        cr = crest(st) if have_crest else np.nan
+        e = abs(sp - T["spread"]) + (0.75 * abs(cr - T["crest"]) if have_crest and np.isfinite(cr) else 0.0)
+        if best is None or e < best[0]:
+            best = (e, p, sp, cr, style)
     P = best[1]
-    log(f"  compression: spread {best[2]:.1f} (target {T['spread']:.1f})")
+    log(f"  compression: {best[4]}, spread {best[2]:.1f} (target {T['spread']:.1f})"
+        + (f", crest {best[3]:.1f} (target {T['crest']:.1f})" if have_crest else ""))
 
     # 2) tone EQ, three refinement passes
     err = None

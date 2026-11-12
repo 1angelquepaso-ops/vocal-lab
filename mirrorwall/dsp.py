@@ -168,6 +168,20 @@ def preamp(x, p):
 
 # ------------------------------------------------------------------ dynamics
 @numba.njit(cache=CACHE)
+def _gr(over, ratio, knee):
+    """Gain reduction (dB) with a soft knee - identical to Live.h grDb()."""
+    s = 1.0 - 1.0 / max(1.0, ratio)
+    if knee <= 0:
+        return over * s if over > 0 else 0.0
+    if 2 * over < -knee:
+        return 0.0
+    if 2 * abs(over) <= knee:
+        t = over + knee / 2
+        return s * t * t / (2 * knee)
+    return over * s
+
+
+@numba.njit(cache=CACHE)
 def _opto(x, sr, thr, ratio, attack_ms, rel_fast_ms, rel_slow_ms):
     y = np.empty_like(x)
     ea = math.exp(-1.0 / (sr * 0.001))            # 1 ms detector attack
@@ -186,8 +200,7 @@ def _opto(x, sr, thr, ratio, attack_ms, rel_fast_ms, rel_slow_ms):
         else:
             env = er * env + (1 - er) * lv
         db = 20.0 * math.log10(env + 1e-9)
-        over = db - thr
-        gr = over * (1.0 - 1.0 / ratio) if over > 0 else 0.0
+        gr = _gr(db - thr, ratio, 8.0)
         hist = ls * hist + (1 - ls) * gr
         if gr > grs:
             grs = ga * grs + (1 - ga) * gr
@@ -211,9 +224,55 @@ def _fet(x, sr, thr, ratio, attack_ms, release_ms):
         else:
             env = r * env + (1 - r) * lv
         db = 20.0 * math.log10(env + 1e-9)
-        over = db - thr
-        gr = over * (1.0 - 1.0 / ratio) if over > 0 else 0.0
+        gr = _gr(db - thr, ratio, 4.0)
         y[i] = x[i] * 10.0 ** (-gr / 20.0)
+    return y
+
+
+@numba.njit(cache=CACHE)
+def _vca(x, sr, thr_panel, ratio, fast, release_ms, knee):
+    """SSL G-channel style (fitted to the Nov 2026 capture): RMS detector, curve ~15 dB below the panel
+    threshold, very wide knee, auto 30 ms / fast 3 ms attack."""
+    y = np.empty_like(x)
+    ed = math.exp(-1.0 / (sr * 0.005))
+    ga = math.exp(-1.0 / (sr * (0.003 if fast else 0.030)))
+    gr_ = math.exp(-1.0 / (sr * release_ms / 1000.0))
+    thr = thr_panel - 15.0
+    p = 0.0
+    grs = 0.0
+    for i in range(len(x)):
+        p = ed * p + (1 - ed) * x[i] * x[i]
+        gr = _gr(10.0 * math.log10(p + 1e-18) - thr, ratio, knee)
+        c = ga if gr > grs else gr_
+        grs = c * grs + (1 - c) * gr
+        y[i] = x[i] * 10.0 ** (-grs / 20.0)
+    return y
+
+
+@numba.njit(cache=CACHE)
+def _lev(x, sr, comp_panel, ratio, knee, gate_db):
+    """RVox style leveller (fitted to the Nov 2026 capture): curve ~12 dB below the panel value,
+    ~6:1, 24 dB knee, automatic make-up, optional 1:2 downward expander."""
+    y = np.empty_like(x)
+    ed = math.exp(-1.0 / (sr * 0.005))
+    ga = math.exp(-1.0 / (sr * 0.005))
+    gr_ = math.exp(-1.0 / (sr * 0.250))
+    eg = math.exp(-1.0 / (sr * 0.020))
+    thr = comp_panel - 12.0
+    makeup = 10.0 ** ((-comp_panel * (1.0 - 1.0 / ratio) * 0.85) / 20.0)
+    p = 0.0
+    grs = 0.0
+    gg = 1.0
+    for i in range(len(x)):
+        p = ed * p + (1 - ed) * x[i] * x[i]
+        lvl = 10.0 * math.log10(p + 1e-18)
+        gr = _gr(lvl - thr, ratio, knee)
+        c = ga if gr > grs else gr_
+        grs = c * grs + (1 - c) * gr
+        under = gate_db - lvl
+        tg = 10.0 ** (-min(40.0, under) / 20.0) if under > 0 else 1.0
+        gg = eg * gg + (1 - eg) * tg
+        y[i] = x[i] * 10.0 ** (-grs / 20.0) * makeup * gg
     return y
 
 
@@ -470,6 +529,13 @@ def process(x, P, macros=None, return_parts=False):
     f = P.get("fet")
     if f and f.get("on", True):
         x = _fet(x, SR, f["thr"] + shift, f.get("ratio", 6.0), f.get("attack", 0.4), f.get("release", 80.0))
+    c = P.get("vca")
+    if c and c.get("on", True):
+        x = _vca(x, SR, c["thr"] + shift, c.get("ratio", 4.0), bool(c.get("fast", False)),
+                 c.get("release", 300.0), c.get("knee", 45.0))
+    lv = P.get("lev")
+    if lv and lv.get("on", True):
+        x = _lev(x, SR, lv["comp"] + shift, lv.get("ratio", 6.0), lv.get("knee", 24.0), lv.get("gate", -90.0))
     if P.get("eq"):
         x = run_eq(x, P["eq"])
     d = P.get("deess")

@@ -121,7 +121,9 @@ private:
          gateK { "Gate", 0, 1, 1 }, fx { "FX / Width", 0, 2, 1 }, delay { "Delay", 0, 2, 1 },
          reverb { "Reverb", 0, 2, 1 }, out { "Output", -12, 6, 0, " dB" };
     // 2.0: mode, input, space
-    juce::TextButton modeBtn { "HQ" }, autoBtn { "Auto" };
+    juce::TextButton modeBtn { "HQ" }, autoBtn { "Auto" }, lowLatBtn { "Low latency" }, speedBtn { "Tape 15 ips" };
+    Knob tapeK { "Tape", 0, 1, 0 }, airK { "Air", 0, 1, 0 };
+    juce::Rectangle<int> meterArea;
     Knob inKnob { "Input", -24, 24, 0, " dB" };
     juce::Label spaceLabel { {}, "Space" }, liveInfo;
     juce::ComboBox spaceBox;

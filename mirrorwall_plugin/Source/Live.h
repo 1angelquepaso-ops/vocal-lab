@@ -36,6 +36,8 @@ inline double coef (double ms, double sr) { return ms <= 0 ? 0.0 : std::exp (-1.
 struct Macros
 {
     double comp = 1.0, reverb = 1.0, delay = 1.0, fx = 1.0, deess = 1.0, drive = 0.0, out = 0.0, gate = 1.0;
+    double tape = 0.0, air = 0.0;      // 2.1 colour knobs, 0 = off
+    bool tape30 = false;               // tape speed: false = 15 ips (more bump/HF loss), true = 30 ips
 };
 
 // ------------------------------------------------------------------ biquad (TDF-II)
@@ -172,7 +174,7 @@ struct Opto
 struct Fet
 {
     bool enabled = false, all = false;
-    double thr = -18, ratio = 6, a = 0, r = 0, env = 0, grs = 0, aOver = 0;
+    double thr = -18, ratio = 6, a = 0, r = 0, env = 0, grs = 0, aOver = 0, last = 0;
     void build (const juce::var& f, double sr)
     {
         enabled = on (f);
@@ -188,6 +190,7 @@ struct Fet
         env = lv > env ? a * env + (1 - a) * lv : r * env + (1 - r) * lv;
         double gr = grDb (linToDb (env) - (thr + shift), all ? 40.0 : ratio, 4.0);
         if (all) { grs = gr > grs ? gr : aOver * grs + (1 - aOver) * gr; gr = grs + 0.15 * std::max (0.0, gr); }
+        last = gr;
         return v * dbToLin (-gr);
     }
 };
@@ -299,6 +302,85 @@ struct Gate
         const double c = tg > g ? aa : ar;
         g = c * g + (1 - c) * tg;
         return v * g;
+    }
+};
+
+// ------------------------------------------------------------------ delay line helper (moved up for tape)
+struct Line0
+{
+    std::vector<double> b; int w = 0;
+    void init (int n) { b.assign ((size_t) std::max (2, n), 0.0); w = 0; }
+    inline void push (double x) { b[(size_t) w] = x; if (++w >= (int) b.size()) w = 0; }
+    inline double tap (double d) const
+    {
+        double rp = w - 1 - d; const int n = (int) b.size();
+        while (rp < 0) rp += n;
+        const int i0 = (int) rp; const double fr = rp - i0; const int i1 = (i0 + 1) % n;
+        return b[(size_t) i0] * (1 - fr) + b[(size_t) i1] * fr;
+    }
+};
+
+// ------------------------------------------------------------------ tape (2.1)
+// Light real-time tape colour based on the analog tape research (Chowdhury DAFx 2019):
+//   saturation (soft, level dependent, anti-aliased like the preamp), head bump, playback HF loss
+//   (spacing loss ~ e^(-2 pi f d / v)), and wow/flutter. 15 ips = more bump + more HF loss than 30 ips.
+struct Tape
+{
+    double sr = 44100, amt = -1, xp = 0, ph1 = 0, ph2 = 0;
+    bool speed30 = false, built = false;
+    Biq bump, hf;
+    Line0 ln;
+    void prepare (double rate) { sr = rate; ln.init ((int) (0.004 * sr)); built = false; }
+    void update (double a, bool fast)
+    {
+        if (built && std::abs (a - amt) < 0.005 && fast == speed30) return;
+        amt = a; speed30 = fast; built = true;
+        std::vector<Biq> v;
+        addBand (v, mx::Type::Peak, fast ? 110.0 : 60.0, 1.0, a * (fast ? 1.5 : 2.5), sr);
+        // spacing loss at 10 kHz: d ~1.5 um -> ~2 dB at 15 ips, ~1 dB at 30 ips (doubled toward 20 kHz by the shelf)
+        addBand (v, mx::Type::HighShelf, 12000.0, 0.707, -a * (fast ? 2.0 : 4.0), sr);
+        const double z1 = bump.z1, z2 = bump.z2, h1 = hf.z1, h2 = hf.z2;
+        bump = v[0]; hf = v[1];
+        bump.z1 = z1; bump.z2 = z2; hf.z1 = h1; hf.z2 = h2;      // keep state: no clicks while turning the knob
+    }
+    static inline double sat (double x, double d) { return std::tanh (d * x) / d; }
+    inline double p (double x)
+    {
+        ln.push (x);
+        if (amt <= 0.0) { xp = x; return x; }
+        // wow (0.6 Hz) + flutter (7 Hz)
+        ph1 += 2 * PI * 0.6 / sr; if (ph1 > 2 * PI) ph1 -= 2 * PI;
+        ph2 += 2 * PI * 7.0 / sr; if (ph2 > 2 * PI) ph2 -= 2 * PI;
+        const double dms = 0.5 + amt * (0.12 * std::sin (ph1) + 0.02 * std::sin (ph2));
+        const double y0 = ln.tap (dms / 1000.0 * sr);
+        const double d = dbToLin (amt * 12.0);
+        const double mid = 0.5 * (y0 + xp);
+        const double avg = (sat (xp, d) + 4.0 * sat (mid, d) + sat (y0, d)) / 6.0;
+        xp = y0;
+        double y = y0 + (avg - mid);
+        return hf.p (bump.p (y));
+    }
+};
+
+// ------------------------------------------------------------------ Air (2.1): Aphex Aural Exciter style
+// From US patent 4150253: 2-pole 4 kHz high-pass -> one-sided soft clip (transients only, low-order
+// even + odd harmonics) -> mixed back under the dry signal.
+struct Air
+{
+    Biq hp, post;
+    void prepare (double sr)
+    {
+        std::vector<Biq> v;
+        addBand (v, mx::Type::HighPass, 4000.0, 0.707, 0, sr);
+        addBand (v, mx::Type::HighPass, 2000.0, 0.707, 0, sr);   // keeps the clip's DC / low products out
+        hp = v[0]; post = v[1];
+    }
+    inline double p (double x, double amount)
+    {
+        const double h = hp.p (x);
+        const double k = 8.0;
+        const double c = post.p (h > 0 ? std::tanh (k * h) / k : h);    // one-sided: odd + even harmonics
+        return amount <= 0 ? x : x + amount * 0.6 * c;
     }
 };
 
@@ -437,15 +519,23 @@ struct Limiter
     double c = 0.89, r = 0, g = 1;
     int la = 88, w = 0;
     std::vector<double> dl, dr, need;
-    void build (double ceilingDb, double sr)
+    bool zero = false;
+    void build (double ceilingDb, double sr, bool lowLatency = false)
     {
-        c = dbToLin (ceilingDb); r = coef (60.0, sr); g = 1;
+        c = dbToLin (ceilingDb); r = coef (60.0, sr); g = 1; zero = lowLatency;
         la = std::max (1, (int) (0.002 * sr));
         dl.assign ((size_t) la, 0.0); dr.assign ((size_t) la, 0.0); need.assign ((size_t) la, 1.0); w = 0;
     }
     inline void p (double& L, double& R)
     {
         const double pk = std::max (std::abs (L), std::abs (R));
+        if (zero)                                   // no look-ahead: instant attack, nothing delayed
+        {
+            const double m = pk > c ? c / pk : 1.0;
+            g = m < g ? m : r * g + (1 - r) * m;
+            L *= g; R *= g;
+            return;
+        }
         need[(size_t) w] = pk > c ? c / pk : 1.0;
         double m = 1.0;
         for (double n : need) m = std::min (m, n);
@@ -455,7 +545,7 @@ struct Limiter
         if (++w >= la) w = 0;
         L = ol * g; R = orr * g;
     }
-    int latency() const { return la; }
+    int latency() const { return zero ? 0 : la; }
 };
 
 // ------------------------------------------------------------------ the chain
@@ -463,9 +553,11 @@ class Engine
 {
 public:
     // verbType: 0 = as preset (room), 1 = plate
-    void prepare (double sampleRate, const juce::var& P, int verbType)
+    void prepare (double sampleRate, const juce::var& P, int verbType, bool lowLatency = false)
     {
         sr = sampleRate;
+        tape.prepare (sr);
+        air.prepare (sr);
         micEq.build (P["mic_eq"], sr);
         pre.build (P["pre"], sr);
         opto.build (P["opto"], sr);
@@ -478,7 +570,7 @@ public:
         dbl.build (P["dbl"], sr);
         slap.build (P["slap"], sr);
         verb.build (P["verb"], sr, verbType);
-        lim.build (num (P, "ceiling", -1.0), sr);
+        lim.build (num (P, "ceiling", -1.0), sr, lowLatency);
         outTargetDb = num (P, "out_rms_db", -18.0);
         riderA = coef (400.0, sr);
         calibrate (P, verbType);
@@ -486,6 +578,8 @@ public:
 
     int latency() const { return lim.latency(); }
     double inputGainDb() const { return autoDb; }
+    // meters (audio thread writes, owner copies out after each block)
+    double meterInDb = -100, meterGrDb = 0, meterOutDb = -100;
 
     // Start the Auto rider at a known level (HQ: the file's own active level)
     void seedAuto (double levelDb) { autoDb = juce::jlimit (-24.0, 36.0, IN_REF_DB - levelDb); }
@@ -496,6 +590,8 @@ public:
     {
         const double shift = (1.0 - m.comp) * 10.0;
         const double outG = dbToLin (makeupDb + m.out);
+        tape.update (juce::jlimit (0.0, 1.0, m.tape), m.tape30);
+        double pkIn = 0, pkOut = 0;
         for (int i = 0; i < n; ++i)
         {
             double x = in[i];
@@ -513,6 +609,7 @@ public:
             }
             else x *= dbToLin (inGainDb);
 
+            pkIn = std::max (pkIn, std::abs (x));
             x = micEq.p (x);
             x = pre.p (x, m.drive);
             x = opto.p (x, shift);
@@ -520,8 +617,10 @@ public:
             x = vca.p (x, shift);
             x = lev.p (x, shift);
             x = eq.p (x);
+            x = tape.p (x);
             x = deess.p (x, m.deess);
             x = gate.p (x, m.gate);
+            x = air.p (x, m.air);
 
             double l = x, r = x;
             dbl.p (x, l, r, m.fx);
@@ -529,8 +628,13 @@ public:
             verb.p (x, l, r, m.reverb);
             l *= outG; r *= outG;
             if (useLimiter) lim.p (l, r);
+            pkOut = std::max (pkOut, std::max (std::abs (l), std::abs (r)));
             L[i] = (float) l; R[i] = (float) r;
         }
+        meterInDb = linToDb (pkIn);
+        meterOutDb = linToDb (pkOut);
+        meterGrDb = (opto.enabled ? opto.grs : 0.0) + (fet.enabled ? fet.last : 0.0)
+                  + (vca.enabled ? vca.grs : 0.0) + (lev.enabled ? lev.grs : 0.0);
     }
 
 private:
@@ -540,6 +644,7 @@ private:
     Opto opto; Fet fet; Vca vca; Leveller lev;
     DeEsser deess; Gate gate;
     Doubler dbl; Slap slap; Reverb verb;
+    Tape tape; Air air;
     Limiter lim;
 
     // Fixed output gain for this preset: run 4 s of vocal-band noise at the reference input level through a
@@ -550,7 +655,7 @@ private:
         probe.sr = sr;
         probe.micEq = micEq; probe.pre = pre; probe.opto = opto; probe.fet = fet; probe.vca = vca; probe.lev = lev;
         probe.eq = eq; probe.deess = deess; probe.gate = gate; probe.dbl = dbl; probe.slap = slap; probe.verb = verb;
-        probe.lim = lim; probe.makeupDb = 0;
+        probe.lim = lim; probe.makeupDb = 0; probe.tape = tape; probe.air = air;
         juce::ignoreUnused (P, verbType);
         const int n = (int) (4.0 * sr);
         std::vector<float> x ((size_t) n), L ((size_t) n), R ((size_t) n);

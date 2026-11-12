@@ -21,6 +21,7 @@ mwl::Macros MirrorProcessor::macros() const
     mwl::Macros m;
     m.comp = knobComp; m.reverb = knobReverb; m.delay = knobDelay; m.fx = knobFx;
     m.deess = knobDeess; m.drive = knobDrive; m.out = knobOut; m.gate = knobGate;
+    m.tape = knobTape; m.air = knobAir; m.tape30 = tape30.load();
     return m;
 }
 
@@ -41,7 +42,7 @@ void MirrorProcessor::rebuildEngine()
         if (P.isObject())
         {
             fresh = std::make_unique<mwl::Engine>();
-            fresh->prepare (hostRate, P, verbType);
+            fresh->prepare (hostRate, P, verbType, lowLatency.load());
         }
     }
     {
@@ -124,6 +125,9 @@ void MirrorProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
                 for (int i = 0; i < n; ++i) buffer.setSample (0, start + i, 0.5f * (outL[(size_t) i] + outR[(size_t) i]));
         }
         liveIn = autoIn ? engine->inputGainDb() : gain;
+        meterIn = (float) engine->meterInDb;
+        meterGr = (float) engine->meterGrDb;
+        meterOut = (float) engine->meterOutDb;
         return;
     }
 
@@ -176,6 +180,10 @@ void MirrorProcessor::getStateInformation (juce::MemoryBlock& dest)
     t.setProperty ("drive", knobDrive.load(), nullptr);
     t.setProperty ("out", knobOut.load(), nullptr);
     t.setProperty ("gate", knobGate.load(), nullptr);
+    t.setProperty ("tape", knobTape.load(), nullptr);
+    t.setProperty ("air", knobAir.load(), nullptr);
+    t.setProperty ("tape30", tape30.load(), nullptr);
+    t.setProperty ("lowLat", lowLatency.load(), nullptr);
     juce::MemoryOutputStream mo (dest, false);
     t.writeToStream (mo);
 }
@@ -198,6 +206,10 @@ void MirrorProcessor::setStateInformation (const void* data, int size)
     knobDrive = (double) t.getProperty ("drive", 0.0);
     knobOut = (double) t.getProperty ("out", 0.0);
     knobGate = (double) t.getProperty ("gate", 1.0);
+    knobTape = (double) t.getProperty ("tape", 0.0);
+    knobAir = (double) t.getProperty ("air", 0.0);
+    tape30 = (bool) t.getProperty ("tape30", false);
+    lowLatency = (bool) t.getProperty ("lowLat", false);
     rebuildEngine();
     setLiveMode ((bool) t.getProperty ("live", false));
 }

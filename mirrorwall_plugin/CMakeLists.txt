@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(Mirrorwall VERSION 2.0.0)
+project(Mirrorwall VERSION 2.1.0)
 
 include(FetchContent)
 FetchContent_Declare(JUCE

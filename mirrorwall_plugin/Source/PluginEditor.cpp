@@ -370,6 +370,32 @@ MirrorEditor::MirrorEditor (MirrorProcessor& p)
     liveInfo.setColour (juce::Label::textColourId, dim);
     liveInfo.setJustificationType (juce::Justification::centredRight);
     addAndMakeVisible (liveInfo);
+    lowLatBtn.setClickingTogglesState (true);
+    lowLatBtn.setToggleState (proc.lowLatency.load(), juce::dontSendNotification);
+    lowLatBtn.setColour (juce::TextButton::buttonOnColourId, gold.darker (0.5f));
+    lowLatBtn.setTooltip ("LIVE: no limiter look-ahead (0 latency) for recording through MIRRORWALL. Off: 2 ms look-ahead, cleaner peaks.");
+    lowLatBtn.onClick = [this] { proc.setLowLatency (lowLatBtn.getToggleState()); };
+    addAndMakeVisible (lowLatBtn);
+    speedBtn.setClickingTogglesState (true);
+    speedBtn.setToggleState (proc.tape30.load(), juce::dontSendNotification);
+    speedBtn.setButtonText (proc.tape30.load() ? "Tape 30 ips" : "Tape 15 ips");
+    speedBtn.setTooltip ("Tape speed: 15 ips = warmer (more low bump, softer highs); 30 ips = cleaner, tighter");
+    speedBtn.onClick = [this]
+    {
+        proc.tape30 = speedBtn.getToggleState();
+        speedBtn.setButtonText (proc.tape30.load() ? "Tape 30 ips" : "Tape 15 ips");
+        requestRender (100);
+    };
+    addAndMakeVisible (speedBtn);
+    for (auto* k : { &tapeK, &airK })
+    {
+        addAndMakeVisible (*k);
+        k->slider.onValueChange = [this] { syncKnobsToProc(); requestRender (300); };
+    }
+    tapeK.slider.setValue (proc.knobTape.load(), juce::dontSendNotification);
+    airK.slider.setValue (proc.knobAir.load(), juce::dontSendNotification);
+    tapeK.slider.setTooltip ("Tape colour: saturation, low bump, softer highs, a little wow/flutter (0 = off)");
+    airK.slider.setTooltip ("Air: Aphex-style exciter, adds presence/sparkle above 4 kHz (0 = off)");
     addAndMakeVisible (preBox);
 
     rawLane = std::make_unique<Lane> (formats, thumbCache, "RAW", rawCol, false);
@@ -623,6 +649,8 @@ void MirrorEditor::syncKnobsToProc()
     proc.knobDelay = delay.slider.getValue();
     proc.knobReverb = reverb.slider.getValue();
     proc.knobOut = out.slider.getValue();
+    proc.knobTape = tapeK.slider.getValue();
+    proc.knobAir = airK.slider.getValue();
 }
 
 juce::String MirrorEditor::tuneSignature() const
@@ -884,6 +912,7 @@ void MirrorEditor::refresh()
 
 void MirrorEditor::timerCallback()
 {
+    if (proc.isLive()) repaint (meterArea.expanded (2));
     if (proc.isLive())
         liveInfo.setText ("LIVE  in " + juce::String (proc.liveInputDb(), 1) + " dB", juce::dontSendNotification);
     else
@@ -934,6 +963,33 @@ void MirrorEditor::paint (juce::Graphics& g)
     g.fillRoundedRectangle (body.removeFromTop (96).toFloat(), 6.0f);     // autotune
     body.removeFromTop (8);
     g.fillRoundedRectangle (body.removeFromTop (110).toFloat(), 6.0f);    // tweak knobs
+
+    // LIVE meters: IN (peak after input gain), GR (compression), OUT (peak)
+    if (! meterArea.isEmpty())
+    {
+        auto m = meterArea;
+        const bool live = proc.isLive();
+        const float vals[3] = { live ? proc.meterIn.load() : -100.0f, live ? -proc.meterGr.load() : 0.0f,
+                                live ? proc.meterOut.load() : -100.0f };
+        const char* names[3] = { "IN", "GR", "OUT" };
+        const int w = m.getWidth() / 3;
+        for (int i = 0; i < 3; ++i)
+        {
+            auto c = m.removeFromLeft (w).reduced (3, 0);
+            auto lab = c.removeFromBottom (11);
+            g.setColour (panel);
+            g.fillRect (c);
+            float frac;
+            if (i == 1) frac = juce::jlimit (0.0f, 1.0f, -vals[1] / 24.0f);                 // 0..24 dB GR from top
+            else frac = juce::jlimit (0.0f, 1.0f, (vals[i] + 48.0f) / 48.0f);               // -48..0 dBFS
+            g.setColour (i == 1 ? gold : (vals[i] > -1.0f ? juce::Colours::red : accent));
+            if (i == 1) g.fillRect (c.withHeight (juce::roundToInt (c.getHeight() * frac)));
+            else g.fillRect (c.withTrimmedTop (juce::roundToInt (c.getHeight() * (1.0f - frac))));
+            g.setColour (dim);
+            g.setFont (9.0f);
+            g.drawText (names[i], lab, juce::Justification::centred);
+        }
+    }
 }
 
 void MirrorEditor::resized()
@@ -941,11 +997,17 @@ void MirrorEditor::resized()
     if (mixLane == nullptr) return;
     auto r = getLocalBounds().reduced (14);
     auto title = r.removeFromTop (34);
-    modeBtn.setBounds (title.removeFromRight (90).reduced (0, 3));
+    modeBtn.setBounds (title.removeFromRight (80).reduced (0, 3));
     title.removeFromRight (6);
-    autoBtn.setBounds (title.removeFromRight (60).reduced (0, 3));
+    autoBtn.setBounds (title.removeFromRight (56).reduced (0, 3));
     title.removeFromRight (6);
-    liveInfo.setBounds (title.removeFromRight (150));
+    lowLatBtn.setBounds (title.removeFromRight (96).reduced (0, 3));
+    title.removeFromRight (6);
+    speedBtn.setBounds (title.removeFromRight (96).reduced (0, 3));
+    title.removeFromRight (8);
+    meterArea = title.removeFromRight (84).reduced (0, 2);
+    title.removeFromRight (6);
+    liveInfo.setBounds (title.removeFromRight (130));
     title.removeFromLeft (370);
     info.setBounds (title);
     r.removeFromTop (10);
@@ -998,8 +1060,8 @@ void MirrorEditor::resized()
     auto sp = lab.removeFromTop (26);
     spaceLabel.setBounds (sp.removeFromLeft (44));
     spaceBox.setBounds (sp.withTrimmedRight (10).reduced (0, 2));
-    const int kw = kr.getWidth() / 9;
-    for (auto* k : { &inKnob, &drive, &comp, &deess, &gateK, &fx, &delay, &reverb, &out })
+    const int kw = kr.getWidth() / 11;
+    for (auto* k : { &inKnob, &drive, &comp, &deess, &gateK, &tapeK, &airK, &fx, &delay, &reverb, &out })
         k->setBounds (kr.removeFromLeft (kw));
     r.removeFromTop (10);
 

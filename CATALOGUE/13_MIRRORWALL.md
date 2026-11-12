@@ -45,6 +45,13 @@ BAYWATCH 0.52 dB · BLUE FAYGO 0.66 · DAYSINN 0.37 · DRAKE DEMO 0.39 · SAIN J
 | `lev` | RVox | RMS leveller, ~6:1, 24 dB knee, auto make-up, curve ~12 dB below the panel value, optional expander | 0.6 dB |
 Captures + analysis files: `Documents\MIRRORWALL\captures\comp_test\` (CLA2A_takes, CLA76_clean, SSLG_dyn_clean, RVox, PLATES_clean).
 Lesson: everything else on the Master (an earlier RVox) flattened the first CLA-76/CLA-2A takes — always one plugin + a fresh Edison.
+### 2.1 additions (Nov 2026)
+- **Emulator picks the compressor**: tries opto→FET (1.x chain), CLA-2A, CLA-76, SSL (incl. fast attack) and RVox
+  styles; keeps the one matching the reference's loudness spread + transient crest (median peak−RMS of active 50 ms
+  frames). Python twins `_vca` / `_lev` + soft knees now match Live.h exactly. Fit time ~32 s on the smoke test.
+- **Tape** knob (0 = off) + 15/30 ips: anti-aliased saturation (up to 12 dB drive), head bump (60 Hz / 110 Hz),
+  playback HF loss (spacing-loss shelf at 12 kHz, −4 / −2 dB at full), wow 0.6 Hz + flutter 7 Hz.
+- **Air** knob: Aphex patent path — 2-pole 4 kHz HP → one-sided soft clip → 2 kHz HP (no DC) → mixed back (≤0.6).
+- **Low latency** switch: limiter without look-ahead → 0 samples latency for tracking. **Meters**: IN / GR / OUT in LIVE.
 ### Still open
-- Python fitter only emits `opto`/`fet`; `vca`/`lev` work in presets but the Emulator doesn't choose them yet.
-- EQP1A (public WDF circuit model), tape (ChowTape physics) and the SSL G EQ stage are researched, not in the chain yet.
+- EQP1A (public WDF circuit model) and the SSL G EQ stage: researched, judged low value (the fitted EQ already matches curves).
