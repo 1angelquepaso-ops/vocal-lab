@@ -22,9 +22,10 @@ private:
 class RenderJob : public juce::Thread
 {
 public:
-    RenderJob (juce::File in, juce::var preset, mw::Macros m, juce::File out, juce::File exportCopy,
-               std::function<void (bool)> done)
+    RenderJob (juce::File in, juce::var preset, mwl::Macros m, int verb, bool autoIn, double inGain,
+               juce::File out, juce::File exportCopy, std::function<void (bool)> done)
         : juce::Thread ("mirrorwall render"), input (std::move (in)), P (std::move (preset)), macros (m),
+          verbType (verb), autoInput (autoIn), inGainDb (inGain),
           output (std::move (out)), exportFile (std::move (exportCopy)), callback (std::move (done)) {}
     ~RenderJob() override { stopThread (60000); }
     void run() override;
@@ -32,7 +33,10 @@ public:
 private:
     juce::File input;
     juce::var P;
-    mw::Macros macros;
+    mwl::Macros macros;
+    int verbType = 0;
+    bool autoInput = true;
+    double inGainDb = 0;
     juce::File output, exportFile;
     std::function<void (bool)> callback;
 };
@@ -116,6 +120,11 @@ private:
     Knob drive { "Drive", -6, 12, 0, " dB" }, comp { "Compression", 0, 2, 1 }, deess { "De-ess", 0, 2, 1 },
          gateK { "Gate", 0, 1, 1 }, fx { "FX / Width", 0, 2, 1 }, delay { "Delay", 0, 2, 1 },
          reverb { "Reverb", 0, 2, 1 }, out { "Output", -12, 6, 0, " dB" };
+    // 2.0: mode, input, space
+    juce::TextButton modeBtn { "HQ" }, autoBtn { "Auto" };
+    Knob inKnob { "Input", -24, 24, 0, " dB" };
+    juce::Label spaceLabel { {}, "Space" }, liveInfo;
+    juce::ComboBox spaceBox;
     // lanes + transport
     std::unique_ptr<Lane> rawLane, mixLane;
     juce::TextButton play { "Play" }, loopBtn { "Loop" }, abBtn { "Hearing: MIRRORWALL" }, openFolder { "Open folder" };
@@ -156,6 +165,8 @@ private:
     void chooseBeat();
     void buildFromReference();
     void syncKnobsToProc();
+    juce::var effectivePreset() const;   // preset + mic match + preamp override
+    void pushLive();                     // send the current chain to the LIVE engine
     void refresh();
     void timerCallback() override;
 

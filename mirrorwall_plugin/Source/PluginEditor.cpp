@@ -63,31 +63,42 @@ void RenderJob::run()
     if (std::unique_ptr<juce::AudioFormatReader> r { fm.createReaderFor (input) })
     {
         const int n = (int) r->lengthInSamples;
+        const double fileRate = r->sampleRate;
         juce::AudioBuffer<float> b ((int) r->numChannels, n);
         r->read (&b, 0, n, 0, true, true);
-        mw::Buf x ((size_t) n);
+        std::vector<float> x ((size_t) n);
         for (int i = 0; i < n; ++i)
         {
             double s = 0;
             for (int c = 0; c < b.getNumChannels(); ++c) s += b.getSample (c, i);
-            x[(size_t) i] = s / b.getNumChannels();
+            x[(size_t) i] = (float) (s / b.getNumChannels());
         }
-        mw::Buf L, R;
-        mw::process (std::move (x), P, macros, L, R, [this] { return threadShouldExit(); });
-        if (! threadShouldExit() && ! L.empty())
+        // same engine as LIVE, run over the whole file
+        mwl::Engine e;
+        e.prepare (fileRate, P, verbType);
+        if (autoInput) e.seedAuto (mwl::activeRmsDb (x.data(), n, fileRate));
+        const int lat = e.latency();
+        x.resize ((size_t) (n + lat), 0.0f);
+        std::vector<float> L (x.size()), R (x.size());
+        for (int start = 0; start < (int) x.size() && ! threadShouldExit(); start += 4096)
         {
-            juce::AudioBuffer<float> o (2, (int) L.size());
-            for (size_t i = 0; i < L.size(); ++i)
+            const int k = juce::jmin (4096, (int) x.size() - start);
+            e.process (x.data() + start, L.data() + start, R.data() + start, k, macros, inGainDb, autoInput);
+        }
+        if (! threadShouldExit())
+        {
+            juce::AudioBuffer<float> o (2, n);
+            for (int i = 0; i < n; ++i)
             {
-                o.setSample (0, (int) i, (float) L[i]);
-                o.setSample (1, (int) i, (float) R[i]);
+                o.setSample (0, i, L[(size_t) (i + lat)]);
+                o.setSample (1, i, R[(size_t) (i + lat)]);
             }
-            auto write = [&o] (const juce::File& f, int bits)
+            auto write = [&o, fileRate] (const juce::File& f, int bits)
             {
                 f.deleteFile();
                 juce::WavAudioFormat wav;
                 std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (
-                    new juce::FileOutputStream (f), mw::SR, 2, bits, {}, 0));
+                    new juce::FileOutputStream (f), fileRate, 2, bits, {}, 0));
                 return w != nullptr && w->writeFromAudioSampleBuffer (o, 0, o.getNumSamples());
             };
             ok = write (output, 32);
@@ -269,7 +280,7 @@ MirrorEditor::MirrorEditor (MirrorProcessor& p)
     micBox.setSelectedId (juce::jlimit (0, micProfiles.size(), proc.micIndex) + 1, juce::dontSendNotification);
     micBox.setTooltip ("Make your current mic sound like the one your chains were built on. "
                        "Applies to your stock chains; Emulator presets are fitted to your mic directly.");
-    micBox.onChange = [this] { proc.micIndex = micBox.getSelectedId() - 1; requestRender (50); };
+    micBox.onChange = [this] { proc.micIndex = micBox.getSelectedId() - 1; pushLive(); requestRender (50); };
     addAndMakeVisible (micBox);
 
     addAndMakeVisible (loadRaw);
@@ -330,7 +341,35 @@ MirrorEditor::MirrorEditor (MirrorProcessor& p)
     for (auto* s : { "From chain", "Tube 737-style", "Console 73-style", "Clean" })
         preBox.addItem (s, preBox.getNumItems() + 1);
     preBox.setSelectedId (1, juce::dontSendNotification);
-    preBox.onChange = [this] { requestRender (50); };
+    preBox.onChange = [this] { pushLive(); requestRender (50); };
+
+    // ---- 2.0: LIVE / HQ, input, space
+    modeBtn.setClickingTogglesState (true);
+    modeBtn.setToggleState (proc.isLive(), juce::dontSendNotification);
+    modeBtn.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffd04545));
+    modeBtn.setTooltip ("LIVE: your FL audio runs through the chain in real time (any preset in the bank). "
+                        "HQ: tune + render the loaded raw vocal file and preview it here.");
+    modeBtn.onClick = [this] { proc.setLiveMode (modeBtn.getToggleState()); if (proc.isLive()) pushLive(); refresh(); };
+    addAndMakeVisible (modeBtn);
+    autoBtn.setClickingTogglesState (true);
+    autoBtn.setToggleState (proc.autoInput.load(), juce::dontSendNotification);
+    autoBtn.setColour (juce::TextButton::buttonOnColourId, accent.darker (0.4f));
+    autoBtn.setTooltip ("Auto input: rides your vocal to the level the chains were built at (-20 dB). Off: use the Input knob.");
+    autoBtn.onClick = [this] { proc.autoInput = autoBtn.getToggleState(); refresh(); requestRender (100); };
+    addAndMakeVisible (autoBtn);
+    inKnob.slider.setValue (proc.inGainDb.load(), juce::dontSendNotification);
+    inKnob.slider.onValueChange = [this] { proc.inGainDb = inKnob.slider.getValue(); requestRender (300); };
+    addAndMakeVisible (inKnob);
+    spaceLabel.setColour (juce::Label::textColourId, dim);
+    addAndMakeVisible (spaceLabel);
+    spaceBox.addItem ("Room (as fitted)", 1);
+    spaceBox.addItem ("Plate (Abbey Road style)", 2);
+    spaceBox.setSelectedId (proc.verbType + 1, juce::dontSendNotification);
+    spaceBox.onChange = [this] { proc.verbType = spaceBox.getSelectedId() - 1; pushLive(); requestRender (50); };
+    addAndMakeVisible (spaceBox);
+    liveInfo.setColour (juce::Label::textColourId, dim);
+    liveInfo.setJustificationType (juce::Justification::centredRight);
+    addAndMakeVisible (liveInfo);
     addAndMakeVisible (preBox);
 
     rawLane = std::make_unique<Lane> (formats, thumbCache, "RAW", rawCol, false);
@@ -566,6 +605,7 @@ void MirrorEditor::selectPreset (int index, bool resetTuning)
         humanize.slider.setValue (proc.tuneHumanize, juce::dontSendNotification);
     }
     deletePreset.setEnabled (presetFiles[index].isAChildOf (userDir()));
+    pushLive();
     requestRender (50);
     refresh();
 }
@@ -627,9 +667,8 @@ void MirrorEditor::update()
     startRender();
 }
 
-void MirrorEditor::startRender()
+juce::var MirrorEditor::effectivePreset() const
 {
-    if (! tunedFile().existsAsFile() || ! preset.isObject()) return;
     auto P = cloneVar (preset);
     const int pre = preBox.getSelectedId();
     if (pre > 1)
@@ -642,16 +681,27 @@ void MirrorEditor::startRender()
     if (proc.micIndex > 0 && proc.micIndex <= micProfiles.size() && presetIsStock())
         if (auto* o = P.getDynamicObject())
             o->setProperty ("mic_eq", cloneVar (micProfiles[proc.micIndex - 1]["eq"]));
-    mw::Macros m;
-    m.comp = proc.knobComp; m.reverb = proc.knobReverb; m.delay = proc.knobDelay; m.fx = proc.knobFx;
-    m.deess = proc.knobDeess; m.drive = proc.knobDrive; m.out = proc.knobOut; m.gate = proc.knobGate;
+    return P;
+}
+
+void MirrorEditor::pushLive()
+{
+    if (preset.isObject()) proc.setLivePreset (effectivePreset());
+}
+
+void MirrorEditor::startRender()
+{
+    if (! tunedFile().existsAsFile() || ! preset.isObject()) return;
+    auto P = effectivePreset();
+    const auto m = proc.macros();
     renderJob.reset();                 // cancels an older render
     rendering = true;
     const int gen = ++renderGeneration;
     proc.status = "Rendering " + proc.presetName + "...";
     refresh();
     juce::Component::SafePointer<MirrorEditor> safe (this);
-    renderJob = std::make_unique<RenderJob> (tunedFile(), P, m, mixFile(), exportFile(), [safe, gen] (bool ok)
+    renderJob = std::make_unique<RenderJob> (tunedFile(), P, m, proc.verbType, proc.autoInput.load(), proc.inGainDb.load(),
+                                             mixFile(), exportFile(), [safe, gen] (bool ok)
     {
         if (safe == nullptr || gen != safe->renderGeneration) return;
         safe->rendering = false;
@@ -824,13 +874,20 @@ void MirrorEditor::refresh()
     micBox.setEnabled (presetIsStock());
     loadRaw.setEnabled (! busy);
     keyFromBeat.setEnabled (! busy);
-    play.setEnabled (proc.rawFile.existsAsFile());
+    play.setEnabled (proc.rawFile.existsAsFile() && ! proc.isLive());
+    modeBtn.setButtonText (proc.isLive() ? "LIVE" : "HQ");
+    modeBtn.setToggleState (proc.isLive(), juce::dontSendNotification);
+    inKnob.setEnabled (! proc.autoInput.load());
     progressBar.setVisible (busy || rendering);
     repaint();
 }
 
 void MirrorEditor::timerCallback()
 {
+    if (proc.isLive())
+        liveInfo.setText ("LIVE  in " + juce::String (proc.liveInputDb(), 1) + " dB", juce::dontSendNotification);
+    else
+        liveInfo.setText ("HQ render", juce::dontSendNotification);
     play.setButtonText (proc.isPreviewing() ? "Stop" : "Play");
     const double len = proc.previewSeconds();
     timeLabel.setText (mmss (proc.previewProgress() * len) + " / " + mmss (len), juce::dontSendNotification);
@@ -884,7 +941,13 @@ void MirrorEditor::resized()
     if (mixLane == nullptr) return;
     auto r = getLocalBounds().reduced (14);
     auto title = r.removeFromTop (34);
-    info.setBounds (title.removeFromRight (420));
+    modeBtn.setBounds (title.removeFromRight (90).reduced (0, 3));
+    title.removeFromRight (6);
+    autoBtn.setBounds (title.removeFromRight (60).reduced (0, 3));
+    title.removeFromRight (6);
+    liveInfo.setBounds (title.removeFromRight (150));
+    title.removeFromLeft (370);
+    info.setBounds (title);
     r.removeFromTop (10);
 
     auto src = r.removeFromTop (34);
@@ -932,8 +995,11 @@ void MirrorEditor::resized()
     toneLabel.setBounds (lab.removeFromTop (20));
     preLabel.setBounds (lab.removeFromTop (22));
     preBox.setBounds (lab.removeFromTop (26).withTrimmedRight (10));
-    const int kw = kr.getWidth() / 8;
-    for (auto* k : { &drive, &comp, &deess, &gateK, &fx, &delay, &reverb, &out })
+    auto sp = lab.removeFromTop (26);
+    spaceLabel.setBounds (sp.removeFromLeft (44));
+    spaceBox.setBounds (sp.withTrimmedRight (10).reduced (0, 2));
+    const int kw = kr.getWidth() / 9;
+    for (auto* k : { &inKnob, &drive, &comp, &deess, &gateK, &fx, &delay, &reverb, &out })
         k->setBounds (kr.removeFromLeft (kw));
     r.removeFromTop (10);
 

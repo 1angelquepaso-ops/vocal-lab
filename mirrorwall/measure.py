@@ -29,6 +29,10 @@ def analyze(path_or_array, sr_in=None):
         x, sr = path_or_array, sr_in
         x = x if x.ndim == 2 else np.stack([x, x], 1)
         name = "array"
+    if x.shape[1] == 1:                       # mono reference: duplicate to L/R (used to crash)
+        x = np.repeat(x, 2, 1)
+    elif x.shape[1] > 2:
+        x = x[:, :2]
     if sr != SR:
         x = np.stack([librosa.resample(x[:, c], orig_sr=sr, target_sr=SR) for c in range(2)], 1)
         sr = SR

@@ -66,8 +66,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: mirrorwall-latest
-          name: MIRRORWALL (latest build)
+          name: MIRRORWALL 2.0 (latest build)
           body: |
+            MIRRORWALL 2.0: LIVE mode (real-time on your FL insert, any preset in the bank) + HQ render with the same engine.
             Download **MIRRORWALL-Windows.zip**, unzip it, and copy the `MIRRORWALL.vst3` folder into
             `C:\Program Files\Common Files\VST3\`. Rescan plugins in FL Studio.
           files: MIRRORWALL-Windows.zip
