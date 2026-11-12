@@ -1,0 +1,47 @@
+name: Build capture host
+
+on:
+  push:
+    branches: [main, capture-host]
+    paths: ['capture_host/**', '.github/workflows/capture_host.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build mw_capture.exe
+        run: |
+          cmake -S capture_host -B build -A x64
+          cmake --build build --config Release --target mw_capture
+
+      - name: Smoke-test the exe
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse build -Filter mw_capture.exe | Select-Object -First 1
+          & $exe.FullName
+          if ($LASTEXITCODE -ne 1) { throw "unexpected exit code $LASTEXITCODE" }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse build -Filter mw_capture.exe | Select-Object -First 1
+          New-Item -ItemType Directory -Force pkg | Out-Null
+          Copy-Item $exe.FullName pkg/
+          Copy-Item capture_host/capture.py, capture_host/waves_capture.py pkg/
+          Copy-Item capture_host/launchers/*.bat pkg/
+          Compress-Archive -Path pkg/* -DestinationPath MW-Capture-Windows.zip -Force
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: capture-host-latest
+          name: MIRRORWALL capture host (latest build)
+          body: Plugin capture host + controller. Unzip into Documents\MIRRORWALL\captures\capture_host.
+          files: MW-Capture-Windows.zip
+          make_latest: false
