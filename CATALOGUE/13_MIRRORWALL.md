@@ -53,5 +53,16 @@ Lesson: everything else on the Master (an earlier RVox) flattened the first CLA-
   playback HF loss (spacing-loss shelf at 12 kHz, −4 / −2 dB at full), wow 0.6 Hz + flutter 7 Hz.
 - **Air** knob: Aphex patent path — 2-pole 4 kHz HP → one-sided soft clip → 2 kHz HP (no DC) → mixed back (≤0.6).
 - **Low latency** switch: limiter without look-ahead → 0 samples latency for tracking. **Meters**: IN / GR / OUT in LIVE.
+### 2.2 additions (Nov 2026)
+- **Build always banks**: falls back to the last raw vocal used (`Documents\MIRRORWALL\last_raw_vocal.txt`) so LIVE users
+  don't need a raw file loaded; engine output is NaN-safe (JUCE's JSON reader rejects NaN, which silently lost presets).
+- **A/B/C**: RAW → MIRRORWALL → REFERENCE, active-loudness matched, same playhead; third waveform lane for the reference.
+- **Save tweaks**: knobs + preamp + Space + tape speed stored as `macros` in the preset (stock chains → "(tweaked)" copy);
+  loading the preset restores them.
+### Emulator 3 plan (agreed Nov 2026)
+Joint perceptual fitting (all settings together, frame-by-frame hearing-weighted loss) · phoneme-aware matching (vowels vs
+vowels, S vs S — copies the chain, not the singer) · acapella-aware analysis (AI stems lose reverb tails + carry artefacts) ·
+artist profiles from 3–5 acapellas · ear-steered finish ("which is closer?" in A/B/C). Later: verse/hook pairs, autotune
+style, double/harmony detection, learning from paired dry/wet sessions.
 ### Still open
 - EQP1A (public WDF circuit model) and the SSL G EQ stage: researched, judged low value (the fitted EQ already matches curves).

@@ -64,7 +64,7 @@ public:
     std::atomic<float> meterIn { -100 }, meterGr { 0 }, meterOut { -100 };
     void setLowLatency (bool on) { lowLatency = on; rebuildEngine(); }
     int verbType = 0;                     // 0 = room (as fitted), 1 = plate
-    bool hearProcessed = true;
+    int hearMode = 1;                     // A/B/C: 0 = raw, 1 = MIRRORWALL, 2 = reference
     int micIndex = 1;                     // 0 = off, else index into the mic profiles
     mwl::Macros macros() const;
 

@@ -4,7 +4,7 @@ namespace
 {
     const juce::Colour bg (0xff0f1014), panel (0xff191b21), panel2 (0xff22252d),
                        accent (0xff9fd3e6), gold (0xffe0b25a), text (0xffe8e8ea), dim (0xff868a94),
-                       rawCol (0xff8f939c), mixCol (0xff9fd3e6);
+                       rawCol (0xff8f939c), mixCol (0xff9fd3e6), refCol (0xffe0b25a);
 
     const char* noteNames[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
     const char* scaleIds[]  = { "major", "minor", "harmonic minor", "phrygian", "chromatic" };
@@ -306,6 +306,10 @@ MirrorEditor::MirrorEditor (MirrorProcessor& p)
         scanPresets();
     };
 
+    addAndMakeVisible (saveTweaks);
+    saveTweaks.setTooltip ("Save your knob tweaks, preamp, Space and tape speed into this preset (stock chains get a '(tweaked)' copy)");
+    saveTweaks.onClick = [this] { saveTweaksToPreset(); };
+
     keyBox.addItem ("Auto", 1);
     for (int i = 0; i < 12; ++i) keyBox.addItem (noteNames[i], i + 2);
     keyBox.setSelectedId (proc.keyIndex + 1, juce::dontSendNotification);
@@ -400,7 +404,9 @@ MirrorEditor::MirrorEditor (MirrorProcessor& p)
 
     rawLane = std::make_unique<Lane> (formats, thumbCache, "RAW", rawCol, false);
     mixLane = std::make_unique<Lane> (formats, thumbCache, "MIRRORWALL", mixCol, true);
-    for (auto* l : { rawLane.get(), mixLane.get() })
+    refLane = std::make_unique<Lane> (formats, thumbCache, "REFERENCE", refCol, false);
+    if (proc.refFile.existsAsFile()) refLane->setFile (proc.refFile);
+    for (auto* l : { rawLane.get(), mixLane.get(), refLane.get() })
     {
         l->onSeek = [this] (float f) { proc.seek (f); };
         l->playhead = [this] { return proc.previewProgress(); };
@@ -420,10 +426,11 @@ MirrorEditor::MirrorEditor (MirrorProcessor& p)
     loopBtn.setToggleState (proc.loop.load(), juce::dontSendNotification);
     loopBtn.onClick = [this] { proc.loop = loopBtn.getToggleState(); };
     addAndMakeVisible (loopBtn);
-    abBtn.setTooltip ("Switch between your raw vocal and the MIRRORWALL chain (level matched)");
+    abBtn.setTooltip ("A/B/C: cycle RAW -> MIRRORWALL -> REFERENCE (all level matched, same playhead)");
     abBtn.onClick = [this]
     {
-        proc.hearProcessed = ! proc.hearProcessed;
+        proc.hearMode = (proc.hearMode + 1) % 3;
+        if (proc.hearMode == 2 && ! proc.refFile.existsAsFile()) proc.hearMode = 0;
         const bool was = proc.isPreviewing();
         rebuildPreview();
         if (was) proc.startPreviewFromHere();
@@ -631,6 +638,7 @@ void MirrorEditor::selectPreset (int index, bool resetTuning)
         humanize.slider.setValue (proc.tuneHumanize, juce::dontSendNotification);
     }
     deletePreset.setEnabled (presetFiles[index].isAChildOf (userDir()));
+    applyStoredTweaks();
     pushLive();
     requestRender (50);
     refresh();
@@ -747,10 +755,10 @@ void MirrorEditor::startRender()
 
 void MirrorEditor::rebuildPreview()
 {
-    rawLane->active = ! proc.hearProcessed;
-    mixLane->active = proc.hearProcessed;
-    rawLane->repaint();
-    mixLane->repaint();
+    rawLane->active = proc.hearMode == 0;
+    mixLane->active = proc.hearMode == 1;
+    refLane->active = proc.hearMode == 2;
+    for (auto* l : { rawLane.get(), mixLane.get(), refLane.get() }) l->repaint();
     auto read = [this] (const juce::File& f, juce::AudioBuffer<float>& b, double& rate)
     {
         std::unique_ptr<juce::AudioFormatReader> r (formats.createReaderFor (f));
@@ -760,27 +768,39 @@ void MirrorEditor::rebuildPreview()
         r->read (&b, 0, (int) r->lengthInSamples, 0, true, true);
         return true;
     };
-    juce::AudioBuffer<float> mix, raw;
-    double rm = 44100, rr = 44100;
-    const bool haveMix = read (mixFile(), mix, rm);
-    if (! proc.hearProcessed || ! haveMix)
+    // loudness of the active (sung) part, so quiet gaps don't skew the match
+    auto activeRms = [] (juce::AudioBuffer<float>& b)
     {
-        if (! read (proc.rawFile, raw, rr)) return;
-        // level-match the raw take to the processed one for a fair A/B
-        auto rms = [] (juce::AudioBuffer<float>& b)
+        const int hop = 2205, n = b.getNumSamples() / hop;
+        std::vector<double> fr;
+        for (int k = 0; k < n; ++k)
         {
             double s = 0;
-            for (int c = 0; c < b.getNumChannels(); ++c) s += std::pow (b.getRMSLevel (c, 0, b.getNumSamples()), 2.0);
-            return std::sqrt (s / juce::jmax (1, b.getNumChannels())) + 1e-9;
-        };
-        if (haveMix) raw.applyGain ((float) (rms (mix) / rms (raw)));
-        const auto pk = raw.getMagnitude (0, raw.getNumSamples());
-        if (pk > 0.98f) raw.applyGain (0.98f / pk);
-        if (raw.getNumChannels() == 1) { raw.setSize (2, raw.getNumSamples(), true); raw.copyFrom (1, 0, raw, 0, 0, raw.getNumSamples()); }
-        proc.setPreview (std::move (raw), rr);
-    }
-    else
-        proc.setPreview (std::move (mix), rm);
+            for (int c = 0; c < b.getNumChannels(); ++c)
+                for (int i = k * hop; i < (k + 1) * hop; ++i) s += (double) b.getSample (c, i) * b.getSample (c, i);
+            fr.push_back (s / (hop * juce::jmax (1, b.getNumChannels())));
+        }
+        if (fr.empty()) return 1e-9;
+        std::sort (fr.begin(), fr.end());
+        double s = 0;
+        for (size_t k = fr.size() / 2; k < fr.size(); ++k) s += fr[k];
+        return std::sqrt (s / (double) (fr.size() - fr.size() / 2)) + 1e-9;
+    };
+    auto finish = [] (juce::AudioBuffer<float>& b)
+    {
+        const auto pk = b.getMagnitude (0, b.getNumSamples());
+        if (pk > 0.98f) b.applyGain (0.98f / pk);
+        if (b.getNumChannels() == 1) { b.setSize (2, b.getNumSamples(), true); b.copyFrom (1, 0, b, 0, 0, b.getNumSamples()); }
+    };
+    juce::AudioBuffer<float> mix, other;
+    double rm = 44100, ro = 44100;
+    const bool haveMix = read (mixFile(), mix, rm);
+    if (proc.hearMode == 1 && haveMix) { proc.setPreview (std::move (mix), rm); return; }
+    const juce::File src = proc.hearMode == 2 ? proc.refFile : proc.rawFile;
+    if (! read (src, other, ro)) { if (haveMix) proc.setPreview (std::move (mix), rm); return; }
+    if (haveMix) other.applyGain ((float) (activeRms (mix) / activeRms (other)));   // level-matched A/B/C
+    finish (other);
+    proc.setPreview (std::move (other), ro);
 }
 
 //==============================================================================
@@ -793,6 +813,7 @@ void MirrorEditor::chooseRaw()
                               const auto f = fc.getResult();
                               if (! f.existsAsFile()) return;
                               proc.rawFile = f;
+                              rememberRaw (f);
                               rawLane->setFile (f);
                               mixLane->setFile ({});
                               mixLane->setExport ({});
@@ -812,8 +833,7 @@ void MirrorEditor::chooseRef()
                           {
                               const auto f = fc.getResult();
                               if (! f.existsAsFile()) return;
-                              proc.refFile = f;
-                              refresh();
+                              setReference (f);
                           });
 }
 
@@ -843,16 +863,89 @@ void MirrorEditor::chooseBeat()
                           });
 }
 
+juce::File MirrorEditor::lastRawStore() const { return userDir().getParentDirectory().getChildFile ("last_raw_vocal.txt"); }
+
+void MirrorEditor::rememberRaw (const juce::File& f)
+{
+    if (f.existsAsFile()) lastRawStore().replaceWithText (f.getFullPathName());
+}
+
+void MirrorEditor::setReference (const juce::File& f)
+{
+    proc.refFile = f;
+    refLane->setFile (f);
+    if (proc.hearMode == 2) rebuildPreview();
+    refresh();
+}
+
+void MirrorEditor::saveTweaksToPreset()
+{
+    if (! preset.isObject() || ! juce::isPositiveAndBelow (presetIndex, presetFiles.size())) return;
+    auto P = effectivePreset();
+    auto* o = P.getDynamicObject();
+    if (o == nullptr) return;
+    auto* m = new juce::DynamicObject();
+    m->setProperty ("comp", proc.knobComp.load());   m->setProperty ("reverb", proc.knobReverb.load());
+    m->setProperty ("delay", proc.knobDelay.load()); m->setProperty ("fx", proc.knobFx.load());
+    m->setProperty ("deess", proc.knobDeess.load()); m->setProperty ("drive", proc.knobDrive.load());
+    m->setProperty ("out", proc.knobOut.load());     m->setProperty ("gate", proc.knobGate.load());
+    m->setProperty ("tape", proc.knobTape.load());   m->setProperty ("air", proc.knobAir.load());
+    m->setProperty ("tape30", proc.tape30.load());   m->setProperty ("space", proc.verbType);
+    o->setProperty ("macros", juce::var (m));
+    o->removeProperty ("mic_eq");                    // mic match is applied per session, not baked
+    auto file = presetFiles[presetIndex];
+    juce::String name = prettyName (file);
+    if (! file.isAChildOf (userDir()))
+    {
+        name = name + " (tweaked)";
+        file = userDir().getChildFile (name.replaceCharacter (' ', '_')
+                   .retainCharacters ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") + ".json");
+    }
+    o->setProperty ("name", name);
+    if (file.replaceWithText (juce::JSON::toString (P)))
+    {
+        proc.status = "Saved your tweaks into " + name + ".";
+        scanPresets (prettyName (file));
+    }
+    else proc.status = "Couldn't save " + file.getFullPathName();
+    refresh();
+}
+
+void MirrorEditor::applyStoredTweaks()
+{
+    const auto m = preset["macros"];
+    if (! m.isObject()) return;
+    auto set = [] (Knob& k, double v) { k.slider.setValue (v, juce::dontSendNotification); };
+    set (comp, mw::num (m, "comp", 1)); set (reverb, mw::num (m, "reverb", 1)); set (delay, mw::num (m, "delay", 1));
+    set (fx, mw::num (m, "fx", 1)); set (deess, mw::num (m, "deess", 1)); set (drive, mw::num (m, "drive", 0));
+    set (out, mw::num (m, "out", 0)); set (gateK, mw::num (m, "gate", 1)); set (tapeK, mw::num (m, "tape", 0));
+    set (airK, mw::num (m, "air", 0));
+    syncKnobsToProc();
+    proc.tape30 = m.hasProperty ("tape30") && (bool) m["tape30"];
+    speedBtn.setToggleState (proc.tape30.load(), juce::dontSendNotification);
+    speedBtn.setButtonText (proc.tape30.load() ? "Tape 30 ips" : "Tape 15 ips");
+    proc.verbType = juce::jlimit (0, 1, (int) mw::num (m, "space", 0));
+    spaceBox.setSelectedId (proc.verbType + 1, juce::dontSendNotification);
+}
+
 void MirrorEditor::buildFromReference()
 {
     if (busy) return;
     if (! proc.refFile.existsAsFile()) { chooseRef(); return; }
-    if (! proc.rawFile.existsAsFile()) { proc.status = "Load your raw vocal first."; refresh(); return; }
+    juce::File raw = proc.rawFile;
+    if (! raw.existsAsFile())
+        raw = juce::File (lastRawStore().loadFileAsString().trim());
+    if (! raw.existsAsFile())
+    {
+        proc.status = "Load a raw vocal of yours once (any take) - the Emulator fits the chain from your voice to the reference.";
+        refresh();
+        return;
+    }
     const auto name = proc.refFile.getFileNameWithoutExtension().substring (0, 40).trim();
     const auto outFile = userDir().getChildFile (name.replaceCharacter (' ', '_')
                                                      .retainCharacters ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") + ".json");
     proc.status = "Building a chain from " + proc.refFile.getFileName() + "...";
-    runEngine ({ "fit", "--ref", proc.refFile.getFullPathName(), "--raw", proc.rawFile.getFullPathName(),
+    runEngine ({ "fit", "--ref", proc.refFile.getFullPathName(), "--raw", raw.getFullPathName(),
                  "--out", outFile.getFullPathName(), "--name", name },
                [this, outFile] (juce::var r)
                {
@@ -875,13 +968,13 @@ void MirrorEditor::filesDropped (const juce::StringArray& files, int x, int)
 {
     // left side = raw vocal, right side = reference for the Emulator
     const juce::File f (files[0]);
-    if (x > getWidth() / 2 && proc.rawFile.existsAsFile())
+    if (x > getWidth() / 2)
     {
-        proc.refFile = f;
-        refresh();
+        setReference (f);
         return;
     }
     proc.rawFile = f;
+    rememberRaw (f);
     rawLane->setFile (f);
     mixLane->setFile ({});
     needTune = true;
@@ -896,8 +989,11 @@ void MirrorEditor::refresh()
     refName.setText (proc.refFile.existsAsFile() ? proc.refFile.getFileName() : "no reference loaded",
                      juce::dontSendNotification);
     status.setText (proc.status, juce::dontSendNotification);
-    abBtn.setButtonText (proc.hearProcessed ? "Hearing: MIRRORWALL" : "Hearing: RAW");
-    abBtn.setColour (juce::TextButton::buttonColourId, proc.hearProcessed ? accent.darker (0.55f) : panel2);
+    static const char* hearNames[] = { "Hearing: RAW", "Hearing: MIRRORWALL", "Hearing: REFERENCE" };
+    abBtn.setButtonText (hearNames[juce::jlimit (0, 2, proc.hearMode)]);
+    abBtn.setColour (juce::TextButton::buttonColourId, proc.hearMode == 1 ? accent.darker (0.55f)
+                                                     : proc.hearMode == 2 ? refCol.darker (0.6f) : panel2);
+    saveTweaks.setEnabled (preset.isObject());
     buildBtn.setEnabled (! busy);
     micBox.setEnabled (presetIsStock());
     loadRaw.setEnabled (! busy);
@@ -922,6 +1018,7 @@ void MirrorEditor::timerCallback()
     timeLabel.setText (mmss (proc.previewProgress() * len) + " / " + mmss (len), juce::dontSendNotification);
     rawLane->repaint();
     mixLane->repaint();
+    refLane->repaint();
 
     if (needRender && juce::Time::getMillisecondCounter() >= renderDue)
     {
@@ -1026,7 +1123,9 @@ void MirrorEditor::resized()
     presetBox.setBounds (row.removeFromLeft (230));
     row.removeFromLeft (6);
     deletePreset.setBounds (row.removeFromLeft (64));
-    row.removeFromLeft (24);
+    row.removeFromLeft (6);
+    saveTweaks.setBounds (row.removeFromLeft (96));
+    row.removeFromLeft (18);
     emuLabel.setBounds (row.removeFromLeft (80));
     loadRef.setBounds (row.removeFromLeft (130));
     row.removeFromLeft (8);
@@ -1082,8 +1181,10 @@ void MirrorEditor::resized()
     status.setBounds (bottom);
 
     // lanes fill the rest
-    const int h = (r.getHeight() - 8) / 2;
+    const int h = (r.getHeight() - 16) / 3;
     rawLane->setBounds (r.removeFromTop (h));
     r.removeFromTop (8);
     mixLane->setBounds (r.removeFromTop (h));
+    r.removeFromTop (8);
+    refLane->setBounds (r.removeFromTop (h));
 }

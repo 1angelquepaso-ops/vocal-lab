@@ -65,6 +65,19 @@ def cmd_key(a):
     return dict(ok=True, key=tune.NOTES[t], scale=s)
 
 
+def _finite(o):
+    """JSON-safe: NaN/inf -> None (JUCE's JSON reader rejects NaN, which used to lose the preset)."""
+    if isinstance(o, dict):
+        return {k: _finite(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_finite(v) for v in o]
+    if isinstance(o, (float, np.floating)):
+        return float(o) if np.isfinite(o) else None
+    if isinstance(o, np.integer):
+        return int(o)
+    return o
+
+
 def cmd_fit(a):
     from . import fit, tune
     say = _progress(a.progress)
@@ -99,7 +112,7 @@ def cmd_fit(a):
     P["source"] = os.path.basename(a.ref)
     P["role"] = "lead"
     with open(a.out, "w") as fh:
-        json.dump(P, fh, indent=1)
+        json.dump(_finite(P), fh, indent=1)
     say(1.0, "Done")
     return dict(ok=True, preset=a.out, name=P["name"], eq_err=P["fit"]["eq_err"])
 
@@ -132,7 +145,7 @@ def main(argv=None):
         res["seconds"] = round(time.time() - t, 2)
     except Exception as e:
         res = dict(ok=False, error=f"{type(e).__name__}: {e}", trace=traceback.format_exc()[-1500:])
-    sys.stdout.write(json.dumps(res) + "\n")
+    sys.stdout.write(json.dumps(_finite(res)) + "\n")
     sys.stdout.flush()
     return 0 if res.get("ok") else 1
 

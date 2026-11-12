@@ -107,7 +107,8 @@ private:
     // chain
     juce::Label chainLabel { {}, "CHAIN" }, emuLabel { {}, "EMULATOR" };
     juce::ComboBox presetBox;
-    juce::TextButton loadRef { "Load reference" }, buildBtn { "Build preset" }, deletePreset { "Delete" };
+    juce::TextButton loadRef { "Load reference" }, buildBtn { "Build preset" }, deletePreset { "Delete" },
+                     saveTweaks { "Save tweaks" };
     juce::Label refName;
     // tuning
     juce::Label tuneLabel { {}, "AUTOTUNE" }, keyLabel { {}, "Key" }, scaleLabel { {}, "Scale" };
@@ -128,7 +129,7 @@ private:
     juce::Label spaceLabel { {}, "Space" }, liveInfo;
     juce::ComboBox spaceBox;
     // lanes + transport
-    std::unique_ptr<Lane> rawLane, mixLane;
+    std::unique_ptr<Lane> rawLane, mixLane, refLane;
     juce::TextButton play { "Play" }, loopBtn { "Loop" }, abBtn { "Hearing: MIRRORWALL" }, openFolder { "Open folder" };
     juce::Label timeLabel, status;
     double progress = -1.0;
@@ -169,6 +170,11 @@ private:
     void syncKnobsToProc();
     juce::var effectivePreset() const;   // preset + mic match + preamp override
     void pushLive();                     // send the current chain to the LIVE engine
+    void saveTweaksToPreset();
+    void applyStoredTweaks();
+    juce::File lastRawStore() const;
+    void rememberRaw (const juce::File& f);
+    void setReference (const juce::File& f);
     void refresh();
     void timerCallback() override;
 

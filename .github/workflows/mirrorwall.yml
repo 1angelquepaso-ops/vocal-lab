@@ -66,9 +66,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: mirrorwall-latest
-          name: MIRRORWALL 2.1 (latest build)
+          name: MIRRORWALL 2.2 (latest build)
           body: |
-            MIRRORWALL 2.1: LIVE mode + HQ on one engine, Tape, Air, meters, low-latency switch; the Emulator picks the best of 4 compressor styles.
+            MIRRORWALL 2.2: A/B/C with the reference, Save tweaks, Build always banks the preset; plus everything in 2.1 (Tape, Air, meters, low latency, Emulator picks the compressor).
             Download **MIRRORWALL-Windows.zip**, unzip it, and copy the `MIRRORWALL.vst3` folder into
             `C:\Program Files\Common Files\VST3\`. Rescan plugins in FL Studio.
           files: MIRRORWALL-Windows.zip
