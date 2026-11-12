@@ -1,0 +1,51 @@
+name: Build MEX-EQ
+
+on:
+  push:
+    branches: [main]
+    paths: ['mexeq_plugin/**', '.github/workflows/mexeq.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build VST3 + test tool
+        run: |
+          cmake -S mexeq_plugin -B build -A x64
+          cmake --build build --config Release --target MexEQ_VST3 me_render
+
+      - name: Smoke-test (LIVE, HQ Natural, HQ Linear, LEARN)
+        shell: pwsh
+        run: |
+          python -c "import wave,struct,math,random; random.seed(1); w=wave.open('t.wav','w'); w.setnchannels(2); w.setsampwidth(2); w.setframerate(44100); w.writeframes(b''.join(struct.pack('<hh',*(2*[int(6000*math.sin(i*0.06)+2000*(random.random()-0.5))])) for i in range(441000))); w.close()"
+          $r = Get-ChildItem -Recurse build -Filter me_render.exe | Select-Object -First 1
+          & $r.FullName t.wav live.wav quality=0 b1_used=1 b1_type=6 b1_freq=465 b1_gain=12 b1_char=1 b2_used=1 b2_type=7 b2_freq=1637 b2_gain=6 b2_char=1
+          & $r.FullName t.wav hq.wav quality=1 phase=0 b1_used=1 b1_type=5 b1_freq=200 b1_gain=8 b1_char=1 drive=5
+          & $r.FullName t.wav lin.wav quality=1 phase=2 b1_used=1 b1_type=3 b1_freq=80 b1_order=6 b1_char=0
+          & $r.FullName t.wav learn.wav quality=0 learn=1
+          foreach ($f in 'live.wav','hq.wav','lin.wav','learn.wav') { if (-not (Test-Path $f)) { throw "render failed: $f" } }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $vst = "build/MexEQ_artefacts/Release/VST3/MEX-EQ.vst3"
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item -Recurse $vst out/
+          Compress-Archive -Path out/* -DestinationPath MEX-EQ-Windows.zip -Force
+
+      - name: Publish download (Releases page)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mexeq-latest
+          name: MEX-EQ (latest build)
+          body: |
+            Download **MEX-EQ-Windows.zip**, unzip it, and copy the `MEX-EQ.vst3` folder into
+            `C:\Program Files\Common Files\VST3\`. Rescan plugins in FL Studio (Options > Manage plugins > Find installed plugins).
+          files: MEX-EQ-Windows.zip
+          make_latest: false
