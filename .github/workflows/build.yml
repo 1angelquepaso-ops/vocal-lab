@@ -7,7 +7,8 @@ on:
                    'packaging/make_pirata_test.py', '.github/workflows/pirata.yml',
                    'mirrorwall/**', 'mirrorwall_plugin/**', 'packaging/mirrorwall_main.py',
                    'packaging/make_mw_test.py', '.github/workflows/mirrorwall.yml',
-                   'dreammic_plugin/**', '.github/workflows/dreammic.yml']
+                   'dreammic_plugin/**', '.github/workflows/dreammic.yml',
+                   'mexeq_plugin/**', '.github/workflows/mexeq.yml']
   workflow_dispatch:
 
 permissions:

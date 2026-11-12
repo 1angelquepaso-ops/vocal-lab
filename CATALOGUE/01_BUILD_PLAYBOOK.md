@@ -52,6 +52,12 @@
 | Placed a pattern clip in FL by accident while closing a dialog | Cancel the New project dialog carefully; don't click the playlist |
 | Explorer is click-only for Claude (no typing/right-click) | Use Extract all → Browse; Angel clicks UAC prompts |
 | FL Plugin Manager can't be controlled by Claude | Angel clicks "Find installed plugins" |
+| Digital EQ curves cramped / wrong near 20 kHz (bilinear) | MEX-EQ `Design.h`: analog sections → hybrid matched design (3-point Vicanek + least-squares numerator, inversion for cuts / poles above Nyquist), best of both |
+| Deep cuts (−21 dB) came out up to 28 dB wrong with plain matched design | Design the inverse (boost) and flip it |
+| Fitted filter tables "jumped" between grid cells | Use a model whose parameters mean something (shelf + 2 small bells, ±6 dB bounds), fit strongest gains first, anchor each fit to its neighbour, check mid-cell error, repair seams |
+| Learn found nothing in the offline test tool | The tool filled the ring buffer faster than it was read — pump the learner per block (the plugin does it on a 10 Hz timer) |
+| Auto threshold never triggered on a constant resonance | Auto threshold = band average + offset; learned resonances use −10 dB, esses +3 dB |
+| GitHub workflow_dispatch only works once the workflow is on main | Add the feature branch to `on: push: branches` while it is unmerged |
 
 ## Parity rule (MIRRORWALL)
 Python reference DSP (`mirrorwall/dsp.py`) and C++ twin (`mirrorwall_plugin/Source/Chain.h`) must stay identical:

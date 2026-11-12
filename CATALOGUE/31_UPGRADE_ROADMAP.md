@@ -16,3 +16,4 @@
 | PIRATA | .m4a input; optional stem separation; edit chords in the roll; swing/humanise export; skin |
 | MIRRORWALL | 2.0 live (above); capture-based stages (RVox, C-type comps, Avalon); paired-mode fitting UI; wider harmony stacks; preset share/export; skin |
 | DREAMMIC | capture-based mic + preamp models; SM7A presence/bass switches; save/load presets; skin |
+| MEX-EQ | presets; band solo/listen; bypass per band in UI; auto-gain; A/B; E-series mode (needs E-Channel); measure ANALOG harmonics minus hiss (optional) |

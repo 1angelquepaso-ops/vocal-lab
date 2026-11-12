@@ -13,6 +13,7 @@ the data behind it, what we tested, and where each one goes next. Use it to rebu
 | 3 | **PIRATA** | Chord + MIDI extractor for samples, Simple / As-played / Rich chords, melody layer (complement, counter, amplify, random, arp), grand-piano preview, drag MIDI | v1 installed | `vocal-lab` (`pirata/`, `pirata_plugin/`) | `pirata-latest` |
 | 4 | **MIRRORWALL** | Vocal chain emulator: 8 stock chains fitted from our own old vocals + EMULATOR (reference acapella → new preset), autotune with key/scale, tweak knobs, mic match | v1 (offline) installed | `vocal-lab` (`mirrorwall/`, `mirrorwall_plugin/`) | `mirrorwall-latest` |
 | 5 | **DREAMMIC** | Real-time mic + preamp emulator: 10 vocal mics, 6 preamps, Distance / Warmth / High-pass / Air, LIVE + HQ modes | v1 installed | `vocal-lab` (`dreammic_plugin/`) | `dreammic-latest` |
+| 6 | **MEX-EQ** | 36-band EQ: SSL G-series curves measured from our Waves G-EQ/G-Channel + FabFilter Pro-Q style control, Parametric EQ 2 menu (Type/Order/Key), dynamic EQ, LEARN, noise-free Drive, LIVE/HQ/AUTO | v1 built (Nov 2026) | `vocal-lab` (`mexeq_plugin/`, branch `mexeq`) | `mexeq-latest` |
 
 Install folder on Angel's PC: `C:\Program Files\Common Files\VST3\` → then FL: Options → Manage plugins → Find installed plugins.
 Audio material lives in `E:\EXTRACTION\IDEAS` (acapellas, raw vocals, stems).
@@ -22,9 +23,9 @@ Audio material lives in `E:\EXTRACTION\IDEAS` (acapellas, raw vocals, stems).
 | File | Read it for |
 |---|---|
 | 01_BUILD_PLAYBOOK.md | How every plugin is built, shipped and installed; all the mistakes we hit and their fixes |
-| 10_CLEAN_VOCAL.md … 14_DREAMMIC.md | One file per plugin: features, design, engine, data, test results, limits, next steps |
+| 10_CLEAN_VOCAL.md … 15_MEX_EQ.md | One file per plugin: features, design, engine, data, test results, limits, next steps |
 | 20_GEAR_AND_VOCAL_DATA.md | Measured data: our 6 old vocal chains, the harmony chain, mics (MA-50, C01U Pro), mic & preamp models |
-| 30_SIGNAL_CAPTURE_PROTOCOL.md | How to "teach" the plugins from real gear or our Waves plugins (signal-flow learning) |
+| 30_SIGNAL_CAPTURE_PROTOCOL.md | How to "teach" the plugins from real gear or our Waves plugins (signal-flow learning) — incl. the Edison multisine method used for MEX-EQ |
 | 31_UPGRADE_ROADMAP.md | Next versions of every plugin, in order |
 | 32_SKIN_DESIGN.md | Current look of each plugin and the plan for better skins |
 | 40_PLANNED_BUILDS.md | Tools not built yet (voice clone, aligner, sample index, Waves host, …) |

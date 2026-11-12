@@ -36,3 +36,17 @@ File names: `<unit>_<setting>_<level>.wav`, 24-bit, 44.1 or 48 kHz, no other pro
 1. Our Waves vocal plugins (RVox, the C-type compressors) → MIRRORWALL stages that match our old chains.
 2. Rebuild one old chain in FL → paired dry/wet → near-exact MIRRORWALL preset.
 3. Studio day: C-800G, U47/U67/U87, 251, SM7A + Avalon / Neve / UA 610 / API / SSL (≈15 min each).
+
+## Fastest method: Edison multisine (used for MEX-EQ, Nov 2026)
+Angel's idea: put Edison after the plugin and turn the knobs while a signal plays; Claude knows each step it made.
+- Signal: **looping multisine** — every FFT bin 15 Hz–20.5 kHz at once, flat, low crest (Schroeder phases), period 8192 samples,
+  −20 dBFS RMS (`model/make_ms.py`, file `MEX_multisine_150s.wav`). Every 8192-sample slice of the recording = one exact curve.
+- Setup: audio clip in the playlist → plugin on the Master → **Edison** after it ("On input", armed). Other plugins in the
+  chain switched off with the **green light** in the mixer slot (Angel's rule).
+- Claude steps the knobs with mouse-wheel scrolls (10 ticks) and holds ~1.2 s per step; ~20–60 steps per take, 2.5 min.
+- Analysis (`model/ms_an.py`): FFT every period, divide by the source spectrum, split into steady segments automatically
+  (consecutive curves within 0.08 dB), median per segment → one curve per knob setting. No timestamps needed.
+- Result: ~150 settings of the SSL G-EQ in 3 takes (vs 1 setting per render before). Accuracy ≈ 0.01 dB.
+- Gotchas: hold each step ≥ 1 s; reset knobs with **Alt-click** (Waves); FL Ctrl+R export needs "Enable master effects" ticked
+  for sweep renders; typing in the Claude reply box steals FL's keyboard focus — Angel keeps hands off during runs.
+- Waves ANALOG switch: adds constant hiss even in silence — measure with it OFF (curves), harmonics only if ever needed.
