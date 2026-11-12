@@ -18,6 +18,7 @@ import waves_capture as W                      # test signals, analysis and plan
 HOST = os.environ.get("MW_HOST", os.path.join(HERE, "mw_capture.exe"))
 SHELL = os.environ.get("MW_SHELL", r"C:\Program Files\Common Files\VST3\WaveShell-VST3 9.91_x64.vst3")
 LIST = os.path.join(HERE, "waves_list.xml")
+SHELL2 = os.environ.get("MW_SHELL2", r"C:\Program Files\Common Files\VST3\WaveShell2-VST3 9.91_x64.vst3")
 DATA = os.path.join(HERE, "data")
 LOCK = os.path.join(HERE, "capture.lock")
 SR = 44100
@@ -110,14 +111,31 @@ def unlock():
 
 
 # ------------------------------------------------------------------ scan
+def merge_lists(dst, src):
+    """Add the PLUGIN entries of one saved list to another."""
+    import xml.etree.ElementTree as ET
+    a, b = ET.parse(dst), ET.parse(src)
+    have = {e.get("name") for e in a.getroot()}
+    for e in b.getroot():
+        if e.get("name") not in have:
+            a.getroot().append(e)
+    a.write(dst, encoding="utf-8", xml_declaration=True)
+
+
 def scan():
-    log("=== scan: reading the Waves shell once (2-5 min). Click Cancel on any Waves pop-up. ===")
-    rc, lines = run_host(["scan", SHELL, LIST], 30 * 60, lambda l: log("   ", l) if l.startswith(("scanned", "ERROR")) else None)
+    log("=== scan: reading the Waves shells once (2-5 min). Click Cancel on any Waves pop-up. ===")
     if not os.path.exists(LIST):
-        log("scan failed", rc); return False
+        rc, lines = run_host(["scan", SHELL, LIST], 30 * 60, lambda l: log("   ", l) if l.startswith(("scanned", "ERROR")) else None)
+        if not os.path.exists(LIST):
+            log("scan failed", rc); return False
+    if os.path.exists(SHELL2):                  # the second shell holds NLS, SSL E/G Channel, RS56 ...
+        tmp = os.path.join(HERE, "waves_list2.xml")
+        rc, lines = run_host(["scan", SHELL2, tmp], 15 * 60, lambda l: log("   ", l) if l.startswith(("scanned", "ERROR")) else None)
+        if os.path.exists(tmp):
+            merge_lists(LIST, tmp)
     txt = open(LIST, encoding="utf-8", errors="replace").read()
     missing = [p[1] for p in PLUGINS if f'name="{p[1]}"' not in txt]
-    log(f"plugin list saved. missing from list: {missing if missing else 'none'}")
+    log(f"plugin list saved ({txt.count('<PLUGIN ')} plugins). missing from list: {missing if missing else 'none'}")
     return True
 
 
