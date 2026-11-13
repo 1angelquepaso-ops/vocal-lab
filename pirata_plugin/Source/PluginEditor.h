@@ -78,10 +78,15 @@ private:
     juce::TextButton loadBtn { "Load sample" }, reanalyze { "Re-analyze" };
     juce::Label sampleName, bpmLabel { {}, "BPM" }, info;
     juce::TextEditor bpmBox;
+    juce::TextButton halfBtn { juce::CharPointer_UTF8 ("\xc3\xb7" "2") }, dblBtn { "x2" }, ratioBtn { "3:2" };
+    juce::Label tempoWarn;
+    void scaleBpm (double factor);
 
     // chords
     juce::Label chordsLabel { {}, "CHORDS" };
     juce::TextButton simpleBtn { "Simple" }, playedBtn { "As played" }, richBtn { "Rich" };
+    juce::Label timingLabel { {}, "Timing" };
+    juce::ComboBox timingBox;
 
     // melody layer
     juce::Label melodyLabel { {}, "MELODY LAYER" }, arpLabel { {}, "ARP" }, arpHint, densityLabel { {}, "Density" },

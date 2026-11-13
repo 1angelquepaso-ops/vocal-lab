@@ -64,6 +64,10 @@
 | TITO: librosa tempo picked 108 for an 85 BPM groove | Own phase-coherence tempo scan (16th/8th/beat), octave inside 80-160 BPM, x2 / ÷2 buttons |
 | TITO: engine got "--layers" with an empty value and misread the next flag | Pass optional lists as one token: `--layers=a,b` |
 | TITO: sum of normalised pad sounds peaked at 2.3 | −9 dB sampler headroom (peak 0.97 on a 100 s render) |
+| PIRATA: basic-pitch note starts ±5-13 ms off the attack (frame-based) | Refine on the >2 kHz transient (2 ms RMS, back from steepest rise to 25 %); full-band envelope ripples on low piano notes |
+| PIRATA: 8th-triplet arp at 75 read as 112.5 | Same 3:2 trap as TITO: bass / chord changes must land on whole bars at the true tempo |
+| PIRATA: slow pad (1 chord / bar) read at a random tempo | Sparse attacks → take the harmonic rhythm as 4/4 bars |
+| Spectral "does this note explain energy" check on piano | Doesn't work: octave ghosts and real octaves share partials. Drums yes (TITO), piano no |
 | Google Storage blocked in Claude's workspace | One-time GitHub workflow downloads + verifies the dataset and commits it |
 
 ## Parity rule (MIRRORWALL)

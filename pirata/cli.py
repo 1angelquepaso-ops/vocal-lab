@@ -5,7 +5,11 @@
           --mode off|complement|counter|amplify|random|arp
           [--density 0..1] [--register low|mid|high] [--seed N]
           [--arp-pattern up|down|updown|converge|random] [--arp-rate 0.5|0.25|0.1667|0.125]
-          [--arp-octaves 1..3] [--out DIR]
+          [--arp-octaves 1..3] [--timing grid|16|32|16T|8T|keep] [--out DIR]
+
+Timing (export + preview): grid = PIRATA's own grid (1/16, triplet beats kept as
+triplets), 16 / 32 / 16T / 8T = snap the real timing to that grid, keep = the
+sample's own timing (every note where it was played, ~1-3 ms).
 """
 from __future__ import annotations
 
@@ -17,8 +21,11 @@ import time
 import traceback
 
 import mido
+import numpy as np
 
 from . import analysis, arrange, piano
+
+GRIDS = {"16": 4, "32": 8, "16T": 6, "8T": 3}
 
 
 def _progress(session):
@@ -56,8 +63,60 @@ def write_midi(path, tracks, bpm, ppq=480):
     mid.save(path)
 
 
+def _warp(an):
+    """Grid position (beats) -> where the sample really plays it: per grid slot the
+    median offset of the sample's own notes, interpolated in between. Generated
+    notes (Rich voicings, bass, melody layer) take on the sample's feel this way."""
+    slots = {}
+    for n in an["notes"]:
+        if "ts" in n:
+            slots.setdefault(n["start"], []).append(n["ts"] - n["start"])
+    if not slots:
+        return lambda x: x
+    q = np.array(sorted(slots))
+    o = np.array([float(np.median(slots[k])) for k in q])
+    return lambda x: x + float(np.interp(x, q, o))
+
+
+def retime(notes, an, mode):
+    """Apply the Timing choice to built notes (all in beats)."""
+    if mode in (None, "grid") or not notes:
+        return notes
+    warp = _warp(an)
+    real = {(n["start"], n["pitch"]): n["ts"] for n in an["notes"] if "ts" in n}
+    d = GRIDS.get(mode)
+    out = []
+    for n in notes:
+        s = real.get((n["start"], n["pitch"]))
+        if s is None:
+            s = warp(n["start"])
+        e = warp(n["end"])
+        if d:
+            s, e = round(s * d) / d, round(e * d) / d
+            if e <= s:
+                e = s + 1 / d
+        else:
+            e = max(e, s + 0.05)
+        out.append(dict(n, start=round(s, 5), end=round(e, 5)))
+    # same pitch: no duplicates, no overlaps
+    out.sort(key=lambda n: (n["pitch"], n["start"]))
+    res = []
+    for n in out:
+        if res and res[-1]["pitch"] == n["pitch"] and n["start"] < res[-1]["end"]:
+            if n["start"] - res[-1]["start"] < 1e-4:
+                res[-1]["end"] = max(res[-1]["end"], n["end"])
+                continue
+            res[-1]["end"] = n["start"]
+        res.append(n)
+    res = [n for n in res if n["end"] > n["start"]]
+    res.sort(key=lambda n: (n["start"], n["pitch"]))
+    return res
+
+
 def _shift(notes, by):
-    return [dict(n, start=n["start"] - by, end=n["end"] - by) for n in notes]
+    # a note played just ahead of bar 1 (Keep timing) starts the bar instead of before it
+    return [dict(n, start=max(0.0, n["start"] - by), end=max(n["end"] - by, n["start"] - by + 0.02, 0.02))
+            for n in notes]
 
 
 def cmd_analyze(a):
@@ -68,7 +127,7 @@ def cmd_analyze(a):
         json.dump(an, f)
     bars = max([c["end"] for c in an["chords"]], default=0) / 4
     return dict(ok=True, key=an["key"], bpm=an["bpm"], bars=int(round(bars)),
-                notes=len(an["notes"]),
+                notes=len(an["notes"]), timing=an.get("timing", {}),
                 chords=[dict(start=c["start"], end=c["end"], name=c["name"], alts=c["alts"],
                              conf=round(c["conf"], 2)) for c in an["chords"]])
 
@@ -86,9 +145,10 @@ def cmd_build(a):
         mel = arrange.melody(an, a.mode, a.density, a.register, a.seed,
                              chord_notes=upper if a.detail != "simple" else None,
                              arp_pattern=a.arp_pattern, arp_rate=a.arp_rate, arp_octaves=a.arp_octaves)
+    upper, bass, mel = (retime(x, an, a.timing) for x in (upper, bass, mel))
     # everything starts on the first bar that has music
     first = min([n["start"] for n in upper + bass + mel], default=0)
-    origin = 4 * int(first // 4)
+    origin = 4 * int((first + 0.1) // 4)          # a note pushed just ahead of bar 1 stays in bar 1
     upper, bass, mel = _shift(upper, origin), _shift(bass, origin), _shift(mel, origin)
     chords = [dict(c, start=c["start"] - origin, end=c["end"] - origin) for c in an["chords"]]
     bpm = an["bpm"]
@@ -156,6 +216,7 @@ def main(argv=None):
     s.add_argument("--arp-pattern", default="up", choices=["up", "down", "updown", "converge", "random"])
     s.add_argument("--arp-rate", type=float, default=0.25)
     s.add_argument("--arp-octaves", type=int, default=2)
+    s.add_argument("--timing", default="grid", choices=["grid", "keep"] + list(GRIDS))
     s.add_argument("--out", default=None)
     a = p.parse_args(argv)
     t = time.time()

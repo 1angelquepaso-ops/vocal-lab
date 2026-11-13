@@ -90,9 +90,13 @@ def render(notes, length_s: float | None = None, gain_db: float = -3.0) -> np.nd
     out = np.zeros((max(total, 1), 2), np.float32)
     for s, e, p, v in notes:
         a = _note_audio(int(p), int(np.clip(v, 1, 127)), max(0.05, e - s))
-        i = int(s * SR)
+        i = int(round(s * SR))
         if i >= total:
             continue
+        if i < 0:                        # starts before the render: play its tail
+            a, i = a[-i:], 0
+            if len(a) == 0:
+                continue
         m = min(len(a), total - i)
         out[i:i + m] += a[:m]
     peak = np.abs(out).max()

@@ -54,6 +54,8 @@ public:
     int arpPattern = 0, arpRate = 1, arpOctaves = 2;
     int seed = 1;
     double bpmOverride = 0.0;
+    int timing = 0;                     // 0 grid, 1 1/16, 2 1/32, 3 1/16T, 4 1/8T, 5 keep timing
+    std::atomic<double> hostBpm { 0.0 }; // FL's tempo, read every block (0 = unknown)
     bool hearOriginal = false, hearChords = true, hearMelody = true;
 
 private:

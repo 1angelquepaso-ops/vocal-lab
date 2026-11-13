@@ -69,11 +69,128 @@ def bpm_from_name(path: str):
     return None
 
 
+def _coh(on, w, period):
+    """Phase coherence of onsets on a grid with this period (0..1) and its angle."""
+    if len(on) == 0:
+        return 0.0, 0.0
+    z = np.sum(w * np.exp(2j * np.pi * on / period))
+    return float(abs(z) / (w.sum() + 1e-9)), float(np.angle(z))
+
+
+def _fine(on, w, bpm):
+    """How well onsets sit on a straight (8th + 16th) or triplet (8th-T) grid."""
+    beat = 60 / bpm
+    s8, _ = _coh(on, w, beat / 2)
+    s16, _ = _coh(on, w, beat / 4)
+    st = (s8 + 0.5 * s16) / 1.5
+    t3, _ = _coh(on, w, beat / 3)
+    t6, _ = _coh(on, w, beat / 6)
+    tr = (t3 + 0.5 * t6) / 1.5
+    return st, tr
+
+
+def _bass_onsets(notes):
+    """Low notes that start something (bass / left hand) with their weights."""
+    lo = [n for n in notes if n["pitch"] < 55]
+    if len(lo) < 4:
+        lo = sorted(notes, key=lambda n: n["pitch"])[: max(4, len(notes) // 4)]
+    return (np.array([n["start"] for n in lo]),
+            np.array([n["amp"] * (1.0 + max(0.0, n["end"] - n["start"])) for n in lo]))
+
+
+def metric_check(notes, bpm):
+    """TITO lesson: a triplet / swung sample read at 3:2 or 4:3 the true tempo looks
+    just as tight on the fine grid. At the true tempo the bass and chord changes land
+    on whole 4-beat bars; at the 3:2-off tempo they fall every 1.5 / 0.75 bars."""
+    on = np.array([n["start"] for n in notes])
+    w = np.array([n["amp"] for n in notes])
+    bo, bw = _bass_onsets(notes)
+    if len(bo) < 4:
+        return bpm, "none"
+
+    def score(b):
+        st, tr = _fine(on, w, b)
+        bar, _ = _coh(bo, bw, 4 * 60 / b)
+        half, _ = _coh(bo, bw, 2 * 60 / b)
+        return max(st, tr), 0.6 * bar + 0.4 * half
+
+    f0, m0 = score(bpm)
+    best, why = bpm, "none"
+    for k in (2 / 3, 3 / 4, 4 / 3, 3 / 2):
+        b = bpm * k
+        if not 55 <= b <= 180:
+            continue
+        f, m = score(b)
+        if m > m0 + 0.25 and f > f0 - 0.12:
+            best, why, m0, f0 = b, f"{k:.3g}", m, f
+    return best, why
+
+
+def harmonic_rhythm_bpm(on, w, bpm, lo=70.0, hi=150.0):
+    """Sparse samples (a pad or held chords changing once a bar) have no rhythm for the
+    grid fit to lock onto - any tempo fits a few whole notes, and a pad's notes fade in
+    one after another. When attacks are sparse, the tempo whose 4/4 bars best line up
+    with the chord attacks wins (if clearly better than the current reading)."""
+    if len(on) < 4:
+        return None
+    t = np.sort(on)
+    groups = 1 + int(np.sum(np.diff(t) > 0.08))
+    span = max(1e-3, t[-1] - t[0])
+    if groups / span > 1.6 or span < 4.0:
+        return None
+
+    def bar_coh(b):
+        c, _ = _coh(on, w, 240.0 / b)
+        return c
+
+    cands = np.arange(lo, hi + 0.01, 0.1)
+    cs = np.array([bar_coh(b) for b in cands])
+    # an octave apart both fit (a change every 2 bars at half the tempo): prefer ~95 BPM
+    score = cs - 0.04 * np.abs(np.log2(cands / 95.0))
+    best = float(cands[int(np.argmax(score))])
+    if cs.max() < 0.6 or bar_coh(bpm) > cs.max() - 0.2:
+        return None
+    return best
+
+
+def refine_period(on, w, bpm, start, div=4):
+    """Exact BPM from the notes: residuals against the 16th grid, fitted as a line over
+    time grown from the start of the sample outwards (a slope = the period is off).
+    Returns bpm, phase anchor and the leftover spread (ms) after the fit."""
+    if len(on) < 8:
+        return bpm, start, 0.0
+    order = np.argsort(on)
+    on, w = on[order], w[order]
+    per = 60 / bpm / div
+    t0 = start
+    span = on[-1] - on[0]
+    for frac in (0.3, 0.6, 1.0, 1.0):
+        sel = on <= on[0] + frac * span + 1e-9
+        x, ww = on[sel], w[sel]
+        r = x - t0 - np.round((x - t0) / per) * per
+        good = np.abs(r) < per * 0.3
+        if good.sum() < 6:
+            break
+        X = np.stack([np.ones(good.sum()), x[good] - t0], 1)
+        W = ww[good]
+        A = X.T @ (X * W[:, None])
+        a, b = np.linalg.solve(A + 1e-9 * np.eye(2), X.T @ (W * r[good]))
+        if abs(b) > 0.01:
+            break
+        t0 = t0 + a
+        per = per * (1 + b)
+    r = on - t0 - np.round((on - t0) / per) * per
+    good = np.abs(r) < per * 0.3
+    spread = 1000 * float(np.median(np.abs(r[good] - np.median(r[good])))) if good.any() else 0.0
+    return 60 / per / div, t0, spread
+
+
 def fit_grid(notes, duration, y22, bpm_hint=None):
-    """Find tempo + phase that best puts note onsets on an 8th/16th grid."""
+    """Find tempo + phase that best puts note onsets on an 8th/16th (or triplet) grid."""
     import librosa
     on = np.array([n["start"] for n in notes]) if notes else np.zeros(0)
     w = np.array([n["amp"] * (1.5 if n["pitch"] < 52 else 1.0) for n in notes]) if notes else np.zeros(0)
+    info = dict(metric="none", spread_ms=0.0, triplet=False)
 
     if bpm_hint:
         cands = [bpm_hint]
@@ -104,34 +221,97 @@ def fit_grid(notes, duration, y22, bpm_hint=None):
             if best is None or s * pri > best[0]:
                 best = (s * pri, b)
     bpm = best[1]
-    if not bpm_hint and abs(bpm - round(bpm)) < 0.35:
-        bpm = float(round(bpm))
-    _, ang = score(bpm)
-    per8 = 60 / bpm / 2
-    offset = (ang / (2 * np.pi)) * per8          # time of an 8th-grid line
+    if not bpm_hint and len(on):
+        bpm, info["metric"] = metric_check(notes, bpm)
+        hr = harmonic_rhythm_bpm(on, w, bpm)
+        if hr:
+            bpm, info["metric"] = hr, "harmonic rhythm"
+    # straight or triplet subdivision decides which fine grid locks the phase
+    st, tr = _fine(on, w, bpm)
+    sub = 3 if tr > st + 0.1 else 2
+    info["triplet"] = sub == 3
     beat = 60 / bpm
-    # choose beat phase (which 8th line is "on the beat") by onset weight
-    first = offset % per8
+    perf = beat / sub
+    _, ang = _coh(on, w, perf)
+    first = ((ang / (2 * np.pi)) * perf) % perf
+    if not bpm_hint and len(on):
+        # exact BPM: fit the drift of the notes against the grid (CSIRAC lesson)
+        bpm, first, info["spread_ms"] = refine_period(on, w, bpm, first, 4 if sub == 2 else 3)
+        if abs(bpm - round(bpm)) < 0.35:
+            bpm = float(round(bpm))
+        beat = 60 / bpm
+        perf = beat / sub
+        _, ang = _coh(on, w, perf)
+        first = ((ang / (2 * np.pi)) * perf) % perf
+    # choose beat phase (which fine line is "on the beat") by onset weight
     sc = []
     # bass notes sit on beats far more often than upper comping does
     wb = np.array([n["amp"] * (4.0 if n["pitch"] < 52 else 1.0) for n in notes]) if notes else np.zeros(0)
     on0 = float(on.min()) if len(on) else 0.0
-    for k in (0, 1):
-        t = first + k * per8
-        # signed: onsets ON the beat score +1, onsets on the "and" score -1
+    for k in range(sub):
+        t = first + k * perf
+        # signed: onsets ON the beat score +1, onsets off it score less
         # (abs() here made the two phases tie and could lock the grid half a beat off)
         v = float(np.sum(wb * np.cos(2 * np.pi * (on - t) / beat))) if len(on) else 0.0
         # samples are nearly always cut to start on a beat
         d = (on0 - t) % beat
-        if min(d, beat - d) < per8 / 2:
+        if min(d, beat - d) < perf / 2:
             v += 0.25 * float(wb.sum())
         sc.append(v)
-    start = (first + int(np.argmax(sc)) * per8) % beat
+    start = (first + int(np.argmax(sc)) * perf) % beat
+    # TITO lesson: the fine-grid phase is dragged by swung / syncopated notes. Re-anchor
+    # it on the notes that sit near the beat and 8th lines (beat lines for triplets).
+    if len(on) >= 4:
+        lines = 2 if sub == 2 else 1
+        for _ in range(2):
+            x = (on - start) / beat
+            r = x - np.round(x * lines) / lines
+            sel = np.abs(r) < 0.1
+            if sel.sum() < 4:
+                break
+            start += float(np.median(r[sel])) * beat
     if start > beat * 0.9:
         start -= beat
     n = int((duration - start) / beat) + 2
     grid = start + beat * np.arange(n)
-    return float(bpm), float(start), grid
+    return float(bpm), float(start), grid, info
+
+
+# ---------------------------------------------------------------- onset refinement
+def refine_onsets(notes, y, sr):
+    """TITO lesson: the transcriber's note starts are frame-based (11.6 ms frames;
+    on piano they scatter +-5-13 ms around the real attack). Each note is moved to
+    where its attack really starts: the energy above 2 kHz (hammer / pluck / stab
+    transient, free of bass and pad tails) is followed back from its steepest rise
+    to 25 % of the way up from the floor before it. Slow attacks (pads, swells)
+    show no clear transient and keep their time. Measured: +-0.7 ms median."""
+    from scipy.signal import butter, sosfiltfilt
+    if not notes:
+        return notes
+    hp = sosfiltfilt(butter(4, 2000 / (sr / 2), btype="high", output="sos"), y)
+    L = max(3, int(0.002 * sr))
+    env = np.sqrt(np.convolve(hp ** 2, np.ones(L) / L, mode="same"))
+    pre, post, rise = int(0.034 * sr), int(0.020 * sr), int(0.010 * sr)
+    out = []
+    for n in notes:
+        m = dict(n)
+        c = int(n["start"] * sr)
+        a, b = max(0, c - pre), min(len(y), c + post)
+        seg = env[a:b]
+        if len(seg) > 4 * L:
+            k = int(np.argmax(np.diff(seg)))
+            pk = k + int(np.argmax(seg[k:k + rise]))
+            base = float(np.min(seg[:k])) if k > 0 else float(seg[0])
+            if seg[pk] > 1.5 * base + 1e-7:
+                thr = base + 0.25 * (seg[pk] - base)
+                j = k
+                while j > 0 and seg[j] > thr:
+                    j -= 1
+                m["start"] = (a + j) / sr
+                m["end"] = max(n["end"], m["start"] + 0.03)
+        out.append(m)
+    out.sort(key=lambda n: (n["start"], n["pitch"]))
+    return out
 
 
 # ---------------------------------------------------------------- cleanup
@@ -181,17 +361,43 @@ def merge_restrikes(notes, gap=0.06):
     return out
 
 
-def quantize(notes, grid, div=4):
-    """Snap to a 1/16 grid laid over the beat grid. Returns notes in beats."""
+def quantize(notes, grid, div=4, triplets=True):
+    """Snap to the beat grid. Each beat is straight 1/16 unless its notes clearly sit
+    on 8th-note triplets (or 16th triplets), then that beat uses the triplet grid.
+    Returns notes in beats; every note also keeps its real (unsnapped) position
+    `ts` / `te` in beats so exports can keep the sample's timing."""
     beat = grid[1] - grid[0]
     t0 = grid[0]
+    xs = [((n["start"] - t0) / beat, (n["end"] - t0) / beat) for n in notes]
+    subs = {}
+    if triplets:
+        per_beat = {}
+        for (s, _), n in zip(xs, notes):
+            per_beat.setdefault(int(np.floor(s + 1 / 12)), []).append((s, n["amp"]))
+        for b, L in per_beat.items():
+            f = np.array([s for s, _ in L])
+            w = np.array([a for _, a in L])
+            if len(f) < 2:
+                continue
+
+            def err(d):
+                return float(np.sum(w * np.abs(f - np.round(f * d) / d)) / w.sum())
+            e4, e3, e6 = err(4), err(3), err(6)
+            # a triplet beat needs a note that is clearly off the 1/16 grid
+            off = np.max(np.abs(f - np.round(f * 4) / 4))
+            if off > 0.06 and min(e3, e6 * 1.4) < 0.45 * e4:
+                subs[b] = 3 if e3 <= e6 * 1.4 else 6
     out = []
-    for n in notes:
-        s = round((n["start"] - t0) / beat * div) / div
-        e = round((n["end"] - t0) / beat * div) / div
+    for (xs_, xe), n in zip(xs, notes):
+        d = subs.get(int(np.floor(xs_ + 1 / 12)), div)
+        s = round(xs_ * d) / d
+        de = subs.get(int(np.floor(xe + 1 / 12)), div)
+        e = round(xe * de) / de
         if e <= s:
-            e = s + 1 / div
-        out.append(dict(start=s, end=e, pitch=n["pitch"], vel=int(np.clip(30 + n["amp"] * 110, 35, 120))))
+            e = s + 1 / d
+        out.append(dict(start=round(s, 6), end=round(e, 6), pitch=n["pitch"],
+                        vel=int(np.clip(30 + n["amp"] * 110, 35, 120)),
+                        ts=round(xs_, 5), te=round(xe, 5)))
     # remove duplicates and overlaps of identical pitch
     out.sort(key=lambda n: (n["pitch"], n["start"]))
     res = []
@@ -497,8 +703,9 @@ def analyze(path, bpm=None, sensitivity=0.5, progress=None):
     raw, act = T.transcribe(y, onset_thresh=onset_t, frame_thresh=frame_t)
     say(0.6, "Finding tempo and chords")
     notes = merge_restrikes(clean_notes(raw, act))
+    notes = refine_onsets(notes, y, T.SR)
     hint = bpm or bpm_from_name(path)
-    bpm, start, grid = fit_grid(notes, dur, y, hint)
+    bpm, start, grid, tinfo = fit_grid(notes, dur, y, hint)
     beat = 60 / bpm
     q = quantize(notes, grid)
     tonic, mode, kconf = detect_key(q)
@@ -526,6 +733,8 @@ def analyze(path, bpm=None, sensitivity=0.5, progress=None):
         for n in q:
             n["start"] -= shift
             n["end"] -= shift
+            n["ts"] = round(n["ts"] - shift, 5)
+            n["te"] = round(n["te"] - shift, 5)
         for c in chords:
             c["start"] -= shift
             c["end"] -= shift
@@ -535,4 +744,32 @@ def analyze(path, bpm=None, sensitivity=0.5, progress=None):
         key=pc_name(tonic, sharp) + (" minor" if mode == "minor" else " major"),
         tonic=tonic, mode=mode, sharp=bool(sharp),
         notes=q, chords=chords, raw_count=len(raw),
+        timing=timing_info(q, tinfo, bpm),
+    )
+
+
+def timing_info(q, tinfo, bpm):
+    """How the sample sits on the grid: steady, looseness, 16th swing, triplet beats.
+    (Push / lay-back can't be measured on a lone sample: there is no click to be
+    late against, the grid is anchored on the sample's own beats.)"""
+    if not q:
+        return dict(steady=True)
+    ms = 60000 / bpm
+    dev = np.array([n["ts"] - n["start"] for n in q]) * ms           # ms off the grid
+    pos = np.array([round((n["start"] % 1) * 12) for n in q])         # 12ths of a beat
+    on8 = np.isin(pos, (0, 6))
+    feel = float(np.median(dev[on8])) if on8.any() else float(np.median(dev))
+    off16 = np.isin(pos, (3, 9))
+    swing = 50.0
+    if off16.sum() >= max(4, 0.15 * len(q)):
+        late = float(np.median(dev[off16])) - feel                   # ms later than straight
+        swing = 50.0 + 100.0 * late / (ms / 2)                       # 50 = straight, 66.7 = triplet
+    trip = float(np.mean(pos % 3 != 0))
+    return dict(
+        steady=bool(tinfo.get("spread_ms", 0) < 25),
+        spread_ms=round(float(tinfo.get("spread_ms", 0)), 1),
+        loose_ms=round(float(np.median(np.abs(dev[on8] - feel))) if on8.any() else 0.0, 1),
+        swing_16=round(float(np.clip(swing, 40, 75)), 1),
+        triplet_share=round(trip, 2),
+        metric_fix=tinfo.get("metric", "none"),
     )

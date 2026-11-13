@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths: ['pirata/**', 'pirata_plugin/**', 'packaging/pirata_main.py',
             'packaging/make_pirata_test.py', 'packaging/pirata_melody_test.py',
+            'packaging/pirata_timing_test.py',
             '.github/workflows/pirata.yml']
   workflow_dispatch:
 
@@ -29,6 +30,9 @@ jobs:
       - name: Melody regression test (Simple = real melody, Rich = melody on top)
         run: python packaging/pirata_melody_test.py melody_test
 
+      - name: Timing regression test (exact BPM, 3:2 triplets, Keep timing ~1 ms, swing, pad tempo)
+        run: python packaging/pirata_timing_test.py timing_test
+
       - name: Build engine (pirata-engine.exe)
         run: >
           pyinstaller --noconfirm --onedir --console --name pirata-engine
@@ -47,6 +51,8 @@ jobs:
           & $e analyze --session sess --sample pirata_test_90bpm.wav
           & $e build --session sess --detail rich --mode counter --seed 3 --out out_test
           & $e build --session sess --detail simple --mode arp --out out_test
+          & $e build --session sess --detail played --timing keep --out out_keep
+          & $e build --session sess --detail played --timing 16T --out out_16t
           if (-not (Test-Path sess/preview_melody.wav)) { throw "engine produced no preview" }
           Get-ChildItem out_test
 

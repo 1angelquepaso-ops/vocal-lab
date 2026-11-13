@@ -52,6 +52,11 @@ float PirataProcessor::previewProgress() const
 void PirataProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
+    // FL's tempo: dragged MIDI follows it, so the window warns when it isn't the sample's
+    if (auto* ph = getPlayHead())
+        if (auto pos = ph->getPosition())
+            if (auto bpm = pos->getBpm())
+                hostBpm.store (*bpm);
     if (! playing.load())
         return;                                   // pure pass-through
 

@@ -15,6 +15,9 @@ namespace
     const char* rateNames[] = { "1/8", "1/8 triplet", "1/16", "1/16 triplet" };
     const char* regIds[]    = { "low", "mid", "high" };
     const char* detailIds[] = { "simple", "played", "rich" };
+    const char* timingIds[] = { "grid", "16", "32", "16T", "8T", "keep" };
+    const char* timingNames[] = { "Grid (1/16 + triplets)", "1/16", "1/32", "1/16 triplet", "1/8 triplet",
+                                  "Keep timing (as played)" };
 
     juce::var makeError (const juce::String& msg)
     {
@@ -267,6 +270,33 @@ PirataEditor::PirataEditor (PirataProcessor& p)
     if (proc.bpmOverride > 0) bpmBox.setText (juce::String (proc.bpmOverride, 1));
     bpmBox.onReturnKey = [this] { analyze(); };
     addAndMakeVisible (bpmBox);
+    halfBtn.setTooltip ("Half the tempo (read at double-time)");
+    dblBtn.setTooltip ("Double the tempo (read at half-time)");
+    ratioBtn.setTooltip ("Swung / triplet sample read at the wrong meter: x2/3, x3/2, x3/4, x4/3");
+    halfBtn.onClick = [this] { scaleBpm (0.5); };
+    dblBtn.onClick  = [this] { scaleBpm (2.0); };
+    ratioBtn.onClick = [this]
+    {
+        juce::PopupMenu m;
+        m.addItem (1, juce::CharPointer_UTF8 ("\xc3\x97" "2/3"));
+        m.addItem (2, juce::CharPointer_UTF8 ("\xc3\x97" "3/2"));
+        m.addItem (3, juce::CharPointer_UTF8 ("\xc3\x97" "3/4"));
+        m.addItem (4, juce::CharPointer_UTF8 ("\xc3\x97" "4/3"));
+        juce::Component::SafePointer<PirataEditor> safe (this);   // made here, not inside the inner lambda (MSVC)
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&ratioBtn),
+                         [safe] (int r)
+                         {
+                             const double f[] = { 0.0, 2.0 / 3.0, 1.5, 0.75, 4.0 / 3.0 };
+                             if (safe != nullptr && r >= 1 && r <= 4) safe->scaleBpm (f[r]);
+                         });
+    };
+    for (auto* b : { &halfBtn, &dblBtn, &ratioBtn })
+        addAndMakeVisible (*b);
+    tempoWarn.setColour (juce::Label::textColourId, juce::Colour (0xffff9a3c));
+    tempoWarn.setFont (juce::FontOptions (12.5f, juce::Font::bold));
+    tempoWarn.setJustificationType (juce::Justification::centredRight);
+    tempoWarn.setMinimumHorizontalScale (0.75f);
+    addChildComponent (tempoWarn);
 
     // chord detail: radio buttons
     int i = 0;
@@ -286,7 +316,15 @@ PirataEditor::PirataEditor (PirataProcessor& p)
         ++i;
     }
     simpleBtn.setTooltip ("One-note line: the sample's own melody, in its real rhythm (root bass on the BASS tile)");
-    playedBtn.setTooltip ("Exactly the notes found in the sample, cleaned and on the grid");
+    playedBtn.setTooltip ("Exactly the notes found in the sample, cleaned (Timing: on the grid or as played)");
+    styleLabel (timingLabel);
+    addAndMakeVisible (timingLabel);
+    for (int k = 0; k < 6; ++k) timingBox.addItem (timingNames[k], k + 1);
+    timingBox.setSelectedItemIndex (proc.timing, juce::dontSendNotification);
+    timingBox.setTooltip ("Grid: PIRATA's grid (1/16, triplet beats kept as triplets). 1/16 ... 1/8T: snap to that grid. "
+                          "Keep timing: every note where the sample plays it (~1 ms), push / lay-back and swing kept.");
+    timingBox.onChange = [this] { proc.timing = timingBox.getSelectedItemIndex(); buildLayers(); };
+    addAndMakeVisible (timingBox);
     richBtn.setTooltip ("The sample's melody on top with lush in-key chords (9ths, 11ths, 13ths) under it + root/10th left hand");
 
     for (int k = 0; k < 6; ++k) modeBox.addItem (modeNames[k], k + 1);
@@ -520,6 +558,16 @@ void PirataEditor::analyze()
     });
 }
 
+void PirataEditor::scaleBpm (double factor)
+{
+    double cur = bpmBox.getText().getDoubleValue();
+    if (cur <= 0 && proc.analysis.isObject()) cur = (double) proc.analysis["bpm"];
+    if (cur <= 0) return;
+    const double nb = juce::jlimit (40.0, 220.0, cur * factor);
+    bpmBox.setText (juce::String (nb, 2).trimCharactersAtEnd ("0").trimCharactersAtEnd ("."), juce::dontSendNotification);
+    analyze();
+}
+
 void PirataEditor::buildLayers()
 {
     if (! proc.analysis.isObject()) return;
@@ -533,6 +581,7 @@ void PirataEditor::buildLayers()
                              "--arp-pattern", patIds[juce::jlimit (0, 4, proc.arpPattern)],
                              "--arp-rate", juce::String (rates[juce::jlimit (0, 3, proc.arpRate)], 4),
                              "--arp-octaves", juce::String (proc.arpOctaves),
+                             "--timing", timingIds[juce::jlimit (0, 5, proc.timing)],
                              "--out", exportDir().getFullPathName() };
     proc.status = "Building...";
     runEngine (args, [this] (juce::var r)
@@ -618,19 +667,35 @@ void PirataEditor::refresh()
                         juce::dontSendNotification);
     const auto& a = proc.analysis;
     if (a.isObject())
+    {
+        const auto t = a["timing"];
+        juce::String feel;
+        const double sw = t.hasProperty ("swing_16") ? (double) t["swing_16"] : 50.0;
+        if ((double) t["triplet_share"] >= 0.2) feel = "   triplet feel";
+        else if (sw >= 55.0) feel = "   swing " + juce::String (juce::roundToInt (sw)) + "%";
         info.setText (a["key"].toString() + "   " + juce::String ((double) a["bpm"], 1) + " BPM   "
-                          + juce::String ((double) a["bars"], 0) + " bars",
+                          + juce::String ((double) a["bars"], 0) + " bars" + feel,
                       juce::dontSendNotification);
+        info.setTooltip ("16th swing " + juce::String (juce::roundToInt (sw)) + "% (50 = straight, 67 = triplet), "
+                         + juce::String (juce::roundToInt ((double) t["loose_ms"])) + " ms human looseness, "
+                         + juce::String (juce::roundToInt ((double) t["triplet_share"] * 100.0)) + "% of notes on triplets. "
+                         + ((bool) t["steady"] ? "Steady tempo." : "Tempo drifts - Keep timing follows it best."));
+    }
     else
+    {
         info.setText ({}, juce::dontSendNotification);
+        info.setTooltip ({});
+    }
     status.setText (proc.status, juce::dontSendNotification);
 
     const bool ready = a.isObject();
     for (auto* c : { (juce::Component*) &simpleBtn, (juce::Component*) &playedBtn, (juce::Component*) &richBtn,
                      (juce::Component*) &modeBox, (juce::Component*) &randomize, (juce::Component*) &density,
                      (juce::Component*) &registerBox, (juce::Component*) &patternBox,
-                     (juce::Component*) &rateBox, (juce::Component*) &octBox })
+                     (juce::Component*) &rateBox, (juce::Component*) &octBox, (juce::Component*) &timingBox })
         c->setEnabled (ready);
+    for (auto* b : { &halfBtn, &dblBtn, &ratioBtn })
+        b->setEnabled (! busy && a.isObject());
     loadBtn.setEnabled (! busy);
     reanalyze.setEnabled (! busy && proc.sampleFile.existsAsFile());
     play.setEnabled (proc.build.isObject());
@@ -645,6 +710,22 @@ void PirataEditor::timerCallback()
     const double len = proc.previewSeconds();
     timeLabel.setText (mmss (proc.previewProgress() * len) + " / " + mmss (len), juce::dontSendNotification);
     roll.repaint();
+
+    // FL tempo warning (TITO lesson: dragged MIDI follows FL's tempo, so a 130 project
+    // plays a 140 sample's MIDI out of line with the sample)
+    {
+        const double host = proc.hostBpm.load();
+        const double mine = proc.analysis.isObject() ? (double) proc.analysis["bpm"] : 0.0;
+        const bool off = host > 0 && mine > 0 && std::abs (host - mine) > 0.003 * mine;
+        if (off)
+        {
+            const auto txt = "FL is at " + juce::String (host, 1) + " BPM, this sample is " + juce::String (mine, 1)
+                             + " - set FL to " + juce::String (mine, 1) + " so MIDI + sample line up";
+            if (tempoWarn.getText() != txt) tempoWarn.setText (txt, juce::dontSendNotification);
+        }
+        if (tempoWarn.isVisible() != off) { tempoWarn.setVisible (off); resized(); }
+    }
+
     if (busy)
     {
         const auto p = proc.sessionDir.getChildFile ("progress.txt").loadFileAsString().trim();
@@ -694,8 +775,17 @@ void PirataEditor::resized()
     src.removeFromLeft (10);
     reanalyze.setBounds (src.removeFromRight (100).reduced (0, 2));
     src.removeFromRight (8);
+    ratioBtn.setBounds (src.removeFromRight (44).reduced (1, 3));
+    dblBtn.setBounds (src.removeFromRight (36).reduced (1, 3));
+    halfBtn.setBounds (src.removeFromRight (36).reduced (1, 3));
+    src.removeFromRight (4);
     bpmBox.setBounds (src.removeFromRight (70).reduced (0, 4));
     bpmLabel.setBounds (src.removeFromRight (40));
+    if (tempoWarn.isVisible())
+    {
+        tempoWarn.setBounds (src.removeFromRight (juce::jmin (420, src.getWidth() / 2)));
+        src.removeFromRight (8);
+    }
     sampleName.setBounds (src);
     r.removeFromTop (10);
 
@@ -707,6 +797,9 @@ void PirataEditor::resized()
     {
         b->setBounds (row1.removeFromLeft (110).reduced (2, 3));
     }
+    row1.removeFromLeft (24);
+    timingLabel.setBounds (row1.removeFromLeft (56));
+    timingBox.setBounds (row1.removeFromLeft (220).reduced (2, 4));
     ctl.removeFromTop (6);
     auto row2 = ctl.removeFromTop (34);
     melodyLabel.setBounds (row2.removeFromLeft (110));

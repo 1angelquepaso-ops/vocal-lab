@@ -13,7 +13,7 @@
 |---|---|
 | Clean Vocal | skin; de-breath / de-click; learn-noise |
 | Harmonizer | call & response + choir in UI; voice-clone voices instead of pitch-shifted; skin |
-| PIRATA | ~~Simple = melody line, Rich = melody + lush chords, grid phase fix~~ (v2 done); chord-name/bass accuracy on dense comping; .m4a input; optional stem separation; edit chords in the roll; swing/humanise export; skin |
+| PIRATA | ~~Simple = melody line, Rich = melody + lush chords, grid phase fix~~ (v2 done); ~~Keep timing / triplet grids, exact BPM, 3:2 check, pad tempo, FL tempo warning~~ (v2.1 done, Nov 13 2026); run realbench on real loops; chord-name/bass accuracy on dense comping; tempo map for drifting loops (if the bench shows drift); .m4a input; optional stem separation; edit chords in the roll; skin |
 | MIRRORWALL | 2.0 live (above); capture-based stages (RVox, C-type comps, Avalon); paired-mode fitting UI; wider harmony stacks; preset share/export; skin |
 | DREAMMIC | ~~MEX-EQ filters, more mics/preamps, mic switches, presets, comp/de-ess, level match~~ (v2 done); capture-based mic + preamp models; skin |
 | TITO PUENTE | v1.1 done (Nov 13 2026): linked pads, naming rework, tempo-map MIDI, exact BPM, sections, FL tempo warning. Next: peel co-occurring sounds (house kick+clap), drum separation from full mixes, skin |
