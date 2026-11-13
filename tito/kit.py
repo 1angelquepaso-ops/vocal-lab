@@ -109,8 +109,32 @@ def make(key, variant=0):
     return (x / (np.max(np.abs(x)) + 1e-9) * 0.9).astype(np.float32)
 
 
-def kit(variant=0):
-    return {k: make(k, variant) for k, _, _ in PADS}
+def kit(variant=0, tone=None):
+    """tone: None = factory, "dark" = lo-fi / processed electronic kit (everything low-passed,
+    saturated, hats short and dull - the kind of kit that fooled v1's naming), "crushed" =
+    dark + bit-crushed + mp3-like 16 kHz ceiling."""
+    snd = {k: make(k, variant) for k, _, _ in PADS}
+    if tone:
+        snd = {k: _tone(k, x, tone, variant) for k, x in snd.items()}
+    return snd
+
+
+def _tone(key, x, tone, variant):
+    rng = np.random.default_rng(500 + variant)
+    cut = {"chh": 5200, "phh": 5000, "ohh": 6000, "crash": 6500, "ride": 6500, "perc2": 6000}.get(key, 4500)
+    cut *= 1 + rng.normal(0, 0.1)
+    y = _lp(x.astype(np.float64), cut, 2)
+    y = np.tanh(2.2 * y / (np.max(np.abs(y)) + 1e-9))
+    if key in ("chh", "phh", "perc2"):                       # short, gated electronic hats
+        n = int(0.11 * SR)
+        y = y[:n] * np.linspace(1, 0, n) ** 2 if len(y) > n else y
+    if tone == "crushed":
+        q = 2 ** 7
+        y = np.round(y * q) / q
+        y = _lp(y, 15500, 4)
+    fade = np.minimum(1, (len(y) - np.arange(len(y))) / (0.005 * SR))
+    y = y * fade
+    return (y / (np.max(np.abs(y)) + 1e-9) * 0.9).astype(np.float32)
 
 
 def save_factory(folder):

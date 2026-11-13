@@ -28,7 +28,7 @@ from .common import PADS, PAD_INDEX, SR
 
 # tuned on tito.bench (see CATALOGUE/15_TITO_PUENTE.md)
 KNOBS = dict(prune=0.10, group_thr=0.09, dup_sim=0.90, explain=0.4, typ_min=0.1, onset_a=0.3, onset_c=0.03,
-             onset_floor=0.6)
+             onset_floor=0.6, unique=0.02)
 
 ASR = 22050          # analysis rate
 HOP = 128            # 5.8 ms
@@ -304,6 +304,25 @@ def templates_from_groups(A, groups, min_hits=3):
     return T[single], [g for g, s in zip(keep, single) if s]
 
 
+def adaptive_groups(A, sus, min_hits=3, target=0.8):
+    """Group at the tight threshold first (drum machines: every hit is the same sample);
+    if most of the song's loudness is left in one-off "groups" (live drums, room, a
+    stem separator's smearing: no two hits identical) loosen step by step until the
+    sounds cover the song. Never loosens past the point where real different drums merge."""
+    lv = np.minimum(band_loudness(A), np.percentile(band_loudness(A), 99))
+    tot = lv.sum() + 1e-12
+    best = None
+    for thr in (KNOBS["group_thr"], 0.13, 0.18, 0.24, 0.30):
+        groups = split_by_ring(group_hits(A, thr), sus)
+        T, g = templates_from_groups(A, groups, min_hits=min_hits)
+        cov = sum(lv[x].sum() for x in g) / tot
+        if best is None or cov > best[0] + 0.05:
+            best = (cov, T, g)
+        if cov >= target:
+            break
+    return best[1], best[2]
+
+
 def decompose(A, T):
     """Activations of every template in every hit (NNLS)."""
     H = np.zeros((len(A), len(T)))
@@ -311,6 +330,41 @@ def decompose(A, T):
     for i, a in enumerate(A):
         H[i], _ = nnls(W, a)
     return H
+
+
+def unique_layers(a, T, h, act, need=None):
+    """A hit that NNLS spreads over several sounds keeps a second (third..) note only if
+    that sound adds energy the others can't: dropping it must leave a clearly worse fit
+    (KNOBS["unique"] of the hit's energy, measured band by band so a quiet hat over a
+    loud kick still counts). Look-alike sounds sharing one hit = ghost notes -> one note."""
+    need = KNOBS["unique"] if need is None else need
+    if len(act) < 2:
+        return act
+    # band-balanced view of the hit so highs count like lows
+    wb = np.ones(NMEL)
+    for lo, hi in BANDS:
+        s = a[lo:hi].sum()
+        wb[lo:hi] = 1.0 / (s + 1e-3 * a.sum() + 1e-12)
+    aw = a * wb
+    keep = sorted(act, key=lambda k: -h[k] * T[k].sum())
+    changed = True
+    while changed and len(keep) > 1:
+        changed = False
+        W = (T[keep] * wb).T
+        hh, _ = nnls(W, aw)
+        base = np.sum((aw - W @ hh) ** 2)
+        tot = np.sum(aw ** 2) + 1e-12
+        worst, wk = None, None
+        for j in range(1, len(keep)):                  # the strongest note always stays
+            rest = [x for x in range(len(keep)) if x != j]
+            hr, _ = nnls(W[:, rest], aw)
+            gain = (np.sum((aw - W[:, rest] @ hr) ** 2) - base) / tot
+            if worst is None or gain < worst:
+                worst, wk = gain, j
+        if worst is not None and worst < need:
+            keep.pop(wk)
+            changed = True
+    return [k for k in act if k in keep]
 
 
 def prune_duplicates(A, T, groups, H, keep_ratio=None):
@@ -404,7 +458,9 @@ def sound_features(M, mono44, frames, times, members, T, H, k):
     high = float(t[fq > 5000].sum())
     band = (fq > 40) & (fq < 1200)
     tb = t[band]
-    tonal = float(tb.max() / (np.median(tb) + 1e-12)) if tb.size else 0.0
+    # peak-to-median inside 40 Hz - 1.2 kHz; a sound with (almost) nothing there is noise-like
+    # there, not "infinitely tonal" (v1 gave hats / sub 808s 1e12 and threw their naming off)
+    tonal = float(tb.max() / (np.median(tb) + 1e-3 * tb.max() + 1e-12)) if tb.size and tb.sum() > 0.03 else 1.0
     pitch = float(fq[band][np.argmax(tb)]) if tb.size else 0.0
     # ring-out: background-subtracted envelope projected on this sound's spectrum
     fps = ASR / HOP
@@ -412,6 +468,19 @@ def sound_features(M, mono44, frames, times, members, T, H, k):
     share = own / (H.sum(axis=1) + 1e-12)
     nxt = np.append(frames[1:], M.shape[1])
     cand = sorted([i for i in members if share[i] > 0.7], key=lambda i: -own[i])[:16] or list(members)[:16]
+    # tone from the real hits at full resolution (up to 20 kHz: hats live above the 11 kHz
+    # analysis ceiling), each minus what was already sounding just before it (808 tails)
+    # solo hits first: no other sound struck at the same moment (an 808 starting under a hat
+    # would make the hat look like a kick)
+    typ_all = np.array([np.median(H[H[:, j] > 0, j]) if np.any(H[:, j] > 0) else 1.0 for j in range(H.shape[1])])
+    others = np.delete(H / (typ_all + 1e-12), k, axis=1) if H.shape[1] > 1 else np.zeros((len(H), 1))
+    solo = [i for i in members if others[i].max(initial=0) < 0.25 and own[i] > 0.2 * typ_all[k]]
+    pick = sorted(solo, key=lambda i: -own[i])[:24] if len(solo) >= 3 else list(cand)
+    spec = added_spectrum(mono44, times[np.array(pick, int)]) if len(pick) else None
+    alt = None
+    if spec is not None:
+        c2, l2, h2 = spec_feats(spec)
+        alt = dict(centroid=c2, low=l2, high=h2)
     full, cut = [], []
     for i in cand:
         f = frames[i]
@@ -450,12 +519,57 @@ def sound_features(M, mono44, frames, times, members, T, H, k):
         flams.append(len(pks))
     flam = float(np.median(flams)) if flams else 1.0
     return dict(decay=round(decay, 4), centroid=round(centroid, 1), low=round(low, 4), high=round(high, 4),
-                tonal=round(tonal, 2), pitch=round(pitch, 1), flam=flam)
+                tonal=round(tonal, 2), pitch=round(pitch, 1), flam=flam, _t=t, _spec=spec, _alt=alt)
+
+
+SPEC_N = 2048
+SPEC_F = np.fft.rfftfreq(SPEC_N, 1 / SR)
+
+
+_EDGES = 30 * 2 ** (np.arange(0, 29) / 3)                     # 1/3-octave bands, 30 Hz .. 20 kHz
+_BAND = np.clip(np.searchsorted(_EDGES, SPEC_F) - 1, -1, len(_EDGES) - 2)
+BAND_F = np.sqrt(_EDGES[:-1] * _EDGES[1:])
+
+
+def _bands(p):
+    out = np.zeros(len(BAND_F))
+    ok = _BAND >= 0
+    np.add.at(out, _BAND[ok], p[ok])
+    return out
+
+
+def added_spectrum(mono44, ts, keep=12):
+    """What each hit ADDED, per 1/3-octave band: a band counts only as far as it clearly
+    jumps at the hit (an 808 gliding or ringing under a hat moves energy between bins,
+    not up by 3+ dB in a band). Uses the hits with the quietest lead-in."""
+    win = np.hanning(SPEC_N)
+    rows = []
+    for t in ts:
+        a = int(t * SR)
+        if a - SPEC_N < 0 or a + SPEC_N > len(mono44):
+            continue
+        post = _bands(np.abs(np.fft.rfft(mono44[a:a + SPEC_N] * win)) ** 2)
+        pre = _bands(np.abs(np.fft.rfft(mono44[a - SPEC_N:a] * win)) ** 2)
+        ratio = post / (pre + 1e-12)
+        w = np.clip((ratio - 1.4) / (4.0 - 1.4), 0.0, 1.0)
+        d = w * np.maximum(0.0, post - pre)
+        if d.sum() > 0:
+            rows.append((pre.sum() / (post.sum() + 1e-12), d / d.sum()))
+    if not rows:
+        return None
+    rows.sort(key=lambda r: r[0])
+    return np.mean([r[1] for r in rows[:keep]], axis=0)
+
+
+def spec_feats(spec, scale=1.0):
+    p = spec / (spec.sum() + 1e-12)
+    f = BAND_F * scale
+    return float((p * f).sum()), float(p[BAND_F < 150].sum()), float(p[f > 5000].sum())
 
 
 # Reference profile per pad: log2 centroid (Hz), low share (<150 Hz), high share (>5 kHz),
-# log2 decay (s), log10 tonality. Measured on the factory kit (6 variants) - see tito/bench.py.
-PROTO = {
+# log2 decay (s), log10 tonality. Two measurement views, each with its own profiles.
+PROTO = {          # template view (v1, measured on the factory kit)
     "kick": (7.17, 0.73, 0.0, -1.94, 3.45), "kick2": (6.51, 0.97, 0.0, 0.63, 4.84),
     "snare": (9.32, 0.02, 0.03, -2.61, 2.62), "clap": (11.11, 0.0, 0.03, -3.12, 1.19),
     "rim": (10.43, 0.0, 0.0, -4.26, 2.35), "chh": (12.87, 0.0, 0.89, -3.24, 1.02),
@@ -465,38 +579,174 @@ PROTO = {
     "ride": (12.0, 0.0, 0.27, 0.13, 1.36), "perc1": (9.11, 0.0, 0.0, -0.88, 2.22),
     "perc2": (12.79, 0.0, 0.86, -3.21, 1.36), "fx": (9.57, 0.0, 0.0, -1.31, 1.96),
 }
+PROTO_S = {        # full-resolution solo-hit view (v1.1, added_spectrum on isolated factory hits)
+    "kick": (6.77, 0.99, 0.0), "kick2": (6.11, 0.98, 0.0), "snare": (11.12, 0.0, 0.21),
+    "clap": (11.5, 0.0, 0.1), "rim": (10.57, 0.0, 0.0), "chh": (13.73, 0.0, 0.99),
+    "ohh": (13.72, 0.0, 0.98), "phh": (13.65, 0.0, 0.97), "tom_lo": (6.89, 1.0, 0.0),
+    "tom_mid": (7.27, 0.53, 0.0), "tom_hi": (7.76, 0.0, 0.0), "crash": (13.58, 0.0, 0.93),
+    "ride": (12.83, 0.0, 0.56), "perc1": (9.1, 0.0, 0.0), "perc2": (13.25, 0.0, 0.96),
+    "fx": (9.78, 0.0, 0.0),
+}
 W = np.array([1.0, 3.0, 3.0, 0.6, 0.5])
 CATCH_ALL = {"perc1": 1.6, "perc2": 1.6, "fx": 2.0}       # leftovers can always live here
 
 
 def feat_vec(ft):
     return np.array([np.log2(max(ft["centroid"], 20)), ft["low"], ft["high"],
-                     np.log2(max(ft["decay"], 0.02)), np.log10(max(ft["tonal"], 1))])
+                     np.log2(max(ft["decay"], 0.02)), min(np.log10(max(ft["tonal"], 1)), 4.0)])
 
 
-def label_costs(ft):
+def label_costs(ft, view=0):
     x = feat_vec(ft)
     out = {}
     for key, proto in PROTO.items():
-        d = float(np.sqrt(np.sum((W * (x - np.array(proto))) ** 2)))
+        pr = np.array(proto, float)
+        if view == 1:
+            pr[:3] = PROTO_S[key]
+        pr[4] = min(pr[4], 4.0)
+        d = float(np.sqrt(np.sum((W * (x - pr)) ** 2)))
         out[key] = min(d, CATCH_ALL[key]) if key in CATCH_ALL else d
     return out
 
 
-def assign_pads(feats, counts):
+LOW_KEYS = {"kick", "kick2", "tom_lo"}
+HIGH_KEYS = {"chh", "ohh", "phh", "crash", "ride", "perc2"}
+HAT_KEYS = {"chh", "ohh", "phh"}
+TOM_KEYS = {"tom_lo", "tom_mid", "tom_hi"}
+
+
+def relative_feats(feats, counts, n_bars):
+    """Song-relative view: processed / lo-fi / mp3 kits are darker than the factory kit the
+    reference profiles were measured on, so 'bright' is judged against THIS song's own
+    brightest frequent sound (scaled so it sits where a factory hat sits). Full-res view."""
+    alt = [ft.get("_alt") if ft else None for ft in feats]
+    spec = [ft.get("_spec") if ft else None for ft in feats]
+    cand = [a["centroid"] for a, c in zip(alt, counts) if a and a["low"] < 0.25 and c >= max(4, 0.25 * n_bars)]
+    target = 2 ** PROTO_S["chh"][0]
+    if not cand or max(cand) >= 0.75 * target:
+        return None
+    scale = float(np.clip(target / max(cand), 1.0, 4.0))
+    out = []
+    for ft, a, sp in zip(feats, alt, spec):
+        if not a or sp is None:
+            out.append(None)
+            continue
+        r = dict(ft)
+        r["centroid"], r["low"], r["high"] = spec_feats(sp, scale)
+        out.append(r)
+    return out
+
+
+def rhythm_stats(beats_by_sound, n_bars):
+    """Per sound: hits per bar, share on a beat, share on the backbeat, share in the last
+    half-bar of 4-bar phrases (where fills live)."""
+    out = []
+    for b in beats_by_sound:
+        b = np.asarray(b, float)
+        if len(b) == 0:
+            out.append(None)
+            continue
+        fr = b % 1
+        on_beat = float(np.mean((fr < 0.12) | (fr > 0.88)))
+        ph = b % 4
+        near = lambda p: np.abs(((ph - p + 2) % 4) - 2) < 0.12
+        back = float(max(np.mean(near(1) | near(3)), np.mean(near(2))))
+        down = float(np.mean(near(0)))
+        fill = float(np.mean(((b % 16) >= 14)))
+        out.append(dict(density=len(b) / max(1, n_bars), on_beat=on_beat, back=back, down=down, fill=fill))
+    return out
+
+
+def family_cost(key, ft, rk):
+    """Physical sanity: what a sound CAN'T be, whatever the nearest profile says.
+    rk = song-relative brightness rank (0 darkest .. 1 brightest)."""
+    c = 0.0
+    vs = views(ft)
+    low_max = max(v["low"] for v in vs)              # "has low end" if either view sees it
+    low_min = min(v["low"] for v in vs)              # "has none" only if both agree...
+    high = max(v["high"] for v in vs)
+    cen = max(v["centroid"] for v in vs)
+    low = low_max
+    if key in ("kick", "kick2") and low_max < 0.25:
+        c += 4.0                                 # a kick / 808 has low end
+    if key == "tom_lo" and low_max < 0.15:
+        c += 2.5
+    if key in TOM_KEYS and low_max < 0.05 and (cen > 2000 or rk >= 0.6):
+        c += 3.0                                 # no low end + bright = hat / perc, not a tom
+    if key in HIGH_KEYS and low_min > 0.3 and high < 0.3:
+        c += 4.0                                 # cymbals / hats have no low end (some 808 leak is ok if bright)
+    if key in HIGH_KEYS and rk < 0.4:
+        c += 1.0                                 # one of the darker sounds of this song
+    if key in ("snare", "clap", "rim") and low_min > 0.6:
+        c += 2.0                                 # mostly sub = kick / 808 on the snare pad
+    return c
+
+
+def rhythm_cost(key, st):
+    """What the sound's PART says. A crash is rare and lands on a beat; a closed hat keeps
+    time; a snare / clap lives on the backbeat; toms are rare."""
+    if not st:
+        return 0.0
+    d = st["density"]
+    c = 0.0
+    if key == "crash":
+        c += 2.5 * max(0.0, d - 0.5) + (1.0 if st["on_beat"] < 0.5 else 0.0)
+    elif key == "chh":
+        c += 1.5 * max(0.0, 1.0 - d)
+    elif key == "ride":
+        c += 1.0 * max(0.0, 1.0 - d)
+    if key in ("crash", "ride", "ohh") and st.get("decay", 1.0) < 0.15 and d > 2.0:
+        c += 1.0                                 # busy and short = a closed hat, cymbals ring
+    elif key in ("snare", "clap"):
+        if d > 3.0 and st["back"] < 0.3 and st.get("bright", 0) >= 0.4:
+            c += 1.5                             # a steady BRIGHT pulse is a hat, not the snare
+        if st["back"] > 0.5:
+            c -= 0.5
+    elif key in TOM_KEYS:
+        if d > 2.0:
+            c += 1.5
+        if st["fill"] > 0.5:
+            c -= 0.3
+    return c
+
+
+def views(ft):
+    """The two measurements of a sound's tone: v1 template (robust to an 808 gliding under a
+    hat) and full-resolution solo hits (robust to hits stacked on a kick, sees above 11 kHz)."""
+    out = [ft]
+    if ft.get("_alt"):
+        v = dict(ft)
+        v.update(ft["_alt"])
+        out.append(v)
+    return out
+
+
+def assign_pads(feats, counts, stats=None, n_bars=1):
     """Best overall sound -> pad assignment (Hungarian). Frequent sounds weigh more,
-    then toms are ordered low->high by pitch and hats by how long they ring."""
+    then toms are ordered low->high by pitch and hats by how long they ring.
+    Cost = distance to the reference profile (absolute, or relative to this song's own
+    brightness, whichever fits) + physical sanity + what the rhythm says (when known)."""
     from scipy.optimize import linear_sum_assignment
     keys = [k for k, _, _ in PADS]
     n = len(feats)
     C = np.full((n, len(keys)), 50.0)
+    rel = relative_feats(feats, counts, n_bars)
+    cens = np.array([ft["centroid"] if ft else 0 for ft in feats], float)
+    order = np.argsort(np.argsort(cens))
+    rank = order / max(1, n - 1)
     for i, ft in enumerate(feats):
         if not ft:
             continue
-        lc = label_costs(ft)
+        # each name is judged on whichever measurement suits it best (either can vouch)
+        lcs = [label_costs(v, j) for j, v in enumerate(views(ft))]
+        if rel and rel[i]:
+            lcs.append({k: c + 0.3 for k, c in label_costs(rel[i], 1).items()})
+        lc = {k: min(l[k] for l in lcs) for k in lcs[0]}
         wgt = 1.0 + 0.3 * np.log1p(counts[i])
+        hi = max([v["high"] for v in views(ft)] + ([rel[i]["high"]] if rel and rel[i] else []))
+        st = dict(stats[i], bright=hi, decay=ft["decay"]) if stats and stats[i] else None
         for j, k in enumerate(keys):
-            C[i, j] = lc[k] * wgt
+            C[i, j] = max(0.0, lc[k] + family_cost(k, ft, rank[i]) + rhythm_cost(k, st)) * wgt
     rows, cols = linear_sum_assignment(C)
     out = {int(r): keys[c] for r, c in zip(rows, cols)}
     # toms: low -> high by measured pitch / brightness
@@ -517,6 +767,14 @@ def assign_pads(feats, counts):
         if len(shorts) == 2:
             a, b = sorted(shorts, key=lambda k: -counts[k])
             out[a], out[b] = "chh", "phh"
+        # the busiest hat keeps time = closed hat, unless it really rings (open)
+        busiest = max(hats, key=lambda k: counts[k])
+        if out[busiest] != "chh" and (feats[busiest] or {}).get("decay", 1) < 0.3 \
+                and counts[busiest] > 1.5 * max(counts[k] for k in hats if k != busiest):
+            other = [k for k in hats if out[k] == "chh"]
+            if other:
+                out[other[0]] = out[busiest]
+            out[busiest] = "chh"
     return out
 
 
@@ -747,30 +1005,48 @@ def sections(hits, n_bars):
 
 
 # ------------------------------------------------------------------ chops
-def choose_chop(times, H, k, members):
+def choose_chop(times, H, k, members, mono44=None):
+    """The hit to cut for the pad: this sound alone, loud, with room after it - and nothing
+    else ringing under it (an 808 tail under the snare chop would play on every snare)."""
     own = H[:, k]
     share = own / (H.sum(axis=1) + 1e-12)
+    typ_all = np.array([np.median(H[H[:, j] > 0, j]) if np.any(H[:, j] > 0) else 1.0 for j in range(H.shape[1])])
+    others = np.delete(H / (typ_all + 1e-12), k, axis=1).max(axis=1) if H.shape[1] > 1 else np.zeros(len(H))
     prev_gap = np.diff(np.concatenate([[-10.0], times]))
     next_gap = np.diff(np.concatenate([times, [times[-1] + 10]]))
     best, bi = -1e9, None
     p95 = np.percentile(own[members], 95) if len(members) else 1
+    w = int(0.04 * SR)
     for i in members:
         if own[i] <= 0:
             continue
         loud = min(own[i] / (p95 + 1e-12), 1.0)
-        sc = 3 * share[i] + 1.5 * min(next_gap[i], 1.0) + 0.6 * min(prev_gap[i], 0.3) + loud
+        sc = 3 * share[i] + 1.5 * min(next_gap[i], 1.0) + 0.6 * min(prev_gap[i], 0.3) + loud \
+            - 1.5 * min(others[i], 2.0)
+        if mono44 is not None:
+            a = int(times[i] * SR)
+            if a > w and a + w < len(mono44):
+                pre = float(np.mean(mono44[a - w:a] ** 2))
+                post = float(np.mean(mono44[a:a + w] ** 2)) + 1e-12
+                sc -= 3.0 * min(pre / post, 1.0)          # something already sounding underneath
         if sc > best:
             best, bi = sc, i
     return bi
 
 
-def write_chop(y44, t, length, path):
+def write_chop(y44, t, length, path, no_sub=False):
+    """no_sub: the sound itself has no low end (template view) but the only hits there are sit
+    on another sound's sub (808 / kick tail) -> filter the borrowed sub out of the chop."""
     import soundfile as sf
     a = max(0, int((t - 0.0015) * SR))
     b = min(len(y44), int((t + length) * SR))
     seg = y44[a:b].copy()
     if len(seg) < 64:
         return False
+    if no_sub:
+        from scipy.signal import butter, sosfiltfilt
+        if len(seg) > 64:
+            seg = sosfiltfilt(butter(4, 140 / (SR / 2), btype="high", output="sos"), seg, axis=0).astype(seg.dtype)
     nf = min(len(seg) // 2, int(0.008 * SR))
     seg[-nf:] *= np.linspace(1, 0, nf)[:, None]
     ni = min(16, len(seg))
@@ -806,16 +1082,18 @@ def analyze(path, out_dir, bpm=None, sensitivity=0.5, progress=None):
     frames, times, A = frames[keep], times[keep], A[keep]
     frames, times, A = merge_bursts(frames, times, A)
     say(0.3, f"Grouping {len(times)} hits into sounds")
-    groups = split_by_ring(group_hits(A), sustain(M, frames, A))
-    T, groups = templates_from_groups(A, groups, min_hits=2 if len(times) < 60 else 3)
+    T, groups = adaptive_groups(A, sustain(M, frames, A), min_hits=2 if len(times) < 60 else 3)
     if len(T) == 0:
         raise ValueError("Couldn't find repeating drum sounds in this file.")
     # junk: a "sound" that is one narrow band spike, or whose hits are all whisper-quiet
+    # (judged against the song's typical loud hit, not its single loudest one: one freak
+    # transient must not make every real sound look quiet)
     lv = band_loudness(A)
+    lv_ref = float(np.percentile(lv, 99))
     def degenerate(t):
         hi = t[8:]                       # above the kick/808 region a lone spike = junk
         return hi.max() > 0.9 * t.sum()
-    ok = [i for i in range(len(T)) if not degenerate(T[i]) and np.median(lv[groups[i]]) > 0.004 * lv.max()]
+    ok = [i for i in range(len(T)) if not degenerate(T[i]) and np.median(lv[groups[i]]) > 0.004 * lv_ref]
     if ok:
         T, groups = T[ok], [groups[i] for i in ok]
     while len(T) > 16:                        # rarest sound joins its closest look-alike
@@ -837,8 +1115,15 @@ def analyze(path, out_dir, bpm=None, sensitivity=0.5, progress=None):
     T_phys = T * bin_scale
     T_phys = T_phys / (T_phys.sum(axis=1, keepdims=True) + 1e-12)
     feats = [sound_features(M, mono44, frames, times, g, T_phys, H, k) for k, g in enumerate(groups)]
-    pad_of = assign_pads(feats, [len(g) for g in groups])
+    counts = [len(g) for g in groups]
+    pad_of = assign_pads(feats, counts)
     say(0.65, "Beat grid + bar 1")
+    grid = beat_grid(mono22, M, times, H, pad_of, bpm)
+    beats = to_beats(times, grid)
+    # second naming pass with the rhythm known (what each sound PLAYS), then bar 1 again
+    nb = max(1.0, (beats.max() - beats.min()) / 4) if len(beats) else 1.0
+    played = [beats[H[:, k] >= 0.3 * typ[k]] for k in range(len(T))]
+    pad_of = assign_pads(feats, counts, rhythm_stats(played, nb), nb)
     grid = beat_grid(mono22, M, times, H, pad_of, bpm)
     beats = to_beats(times, grid)
     say(0.75, "Writing hits")
@@ -846,6 +1131,7 @@ def analyze(path, out_dir, bpm=None, sensitivity=0.5, progress=None):
     p95 = np.array([np.percentile(H[g, k], 95) if len(g) else 1.0 for k, g in enumerate(groups)])
     Wn = T / (np.linalg.norm(T, axis=1, keepdims=True) + 1e-12)      # each sound's own bands
     for i in range(len(times)):
+        act = []
         for k in range(len(T)):
             h = H[i, k]
             if h <= 0 or k not in pad_of:
@@ -855,6 +1141,10 @@ def analyze(path, out_dir, bpm=None, sensitivity=0.5, progress=None):
             explains = (h * T[k]) @ Wn[k] / (A[i] @ Wn[k] + 1e-12)
             if h < KNOBS["typ_min"] * typ[k] or explains < KNOBS["explain"]:
                 continue
+            act.append(k)
+        act = unique_layers(A[i], T, H[i], act)
+        for k in act:
+            h = H[i, k]
             vel = int(np.clip(round(127 * np.sqrt(min(h / (p95[k] + 1e-12), 1.4) / 1.0)), 12, 127))
             hits.append(dict(t=round(float(times[i]), 5), beat=round(float(beats[i]), 4),
                              pad=PAD_INDEX[pad_of[k]], vel=vel))
@@ -882,17 +1172,20 @@ def analyze(path, out_dir, bpm=None, sensitivity=0.5, progress=None):
             continue
         key = pad_of[k]
         ft = feats[k] or {}
-        i = choose_chop(times, H, k, g)
+        i = choose_chop(times, H, k, g, mono44)
         if i is None:
             continue
         want = float(np.clip((ft.get("decay", 0.3) or 0.3) * 1.6, 0.08, 2.5))
         length = min(want, nxt[i] - times[i] - 0.002) if nxt[i] - times[i] > 0.05 else want
         f = os.path.join(pads_dir, f"{stem}_{PAD_INDEX[key] + 1:02d}_{key}.wav")
-        if write_chop(y44, times[i], max(0.05, length), f):
+        alt = ft.get("_alt") or {}
+        no_sub = ft.get("low", 1) < 0.15 and alt.get("low", 0) > 0.5 and key not in LOW_KEYS
+        if write_chop(y44, times[i], max(0.05, length), f, no_sub=no_sub):
             pads.append(dict(pad=PAD_INDEX[key], key=key, file=os.path.abspath(f),
                              hits=int(sum(1 for h in hits if h["pad"] == PAD_INDEX[key])),
                              from_t=round(float(times[i]), 3),
-                             features={a: round(b, 3) if isinstance(b, float) else b for a, b in ft.items()}))
+                             features={a: round(b, 3) if isinstance(b, float) else b for a, b in ft.items()
+                                       if not a.startswith("_")}))
     pads.sort(key=lambda p: p["pad"])
     say(0.98, "Done")
     return dict(file=os.path.abspath(path), duration=dur, bpm=grid["bpm"], steady=grid["steady"],

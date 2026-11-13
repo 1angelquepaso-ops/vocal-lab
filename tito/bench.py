@@ -100,6 +100,59 @@ def bar_fill(x, bars):
     return False
 
 
+# electronic test songs modelled on real failures (Nov 2026 field test: Ninajirachi "CSIRAC" drum stem):
+# a quarter-note hat pulse all song, syncopated kick + 808, claps, offbeat percs, a crash every 8 bars
+# and a quiet, sparse breakdown in the middle. Patterns: 16 steps, "x" loud, "o" soft.
+ELECTRO = {
+    "pulse": {"chh": "x...x...x...x...", "kick": "x.........x.....", "kick2": "..x.......x..x..",
+              "clap": "....x.......x...", "perc1": ".x.....x......x.", "perc2": "...o.o.......o.."},
+    "breakdown": {"chh": "o...o...o...o...", "perc2": "...o.......o...."},
+    "garage": {"kick": "x......x..x.....", "clap": "....x.......x...", "chh": "..x...x...x...x.",
+               "ohh": "......x.......x.", "rim": ".......x.....x..", "perc2": "o.o.o.o.o.o.o.o."},
+}
+
+
+def electro_song(bars=32, seed=0, breakdown=(12, 20), pattern="pulse", quiet=0.28):
+    """Full bars of `pattern`, a quiet breakdown (velocity x quiet ~ -18 dB) with only soft hats,
+    crash + kick into each section."""
+    rng = np.random.default_rng(seed)
+    h = []
+    for bar in range(bars):
+        brk = breakdown and breakdown[0] <= bar < breakdown[1]
+        pat = ELECTRO["breakdown"] if brk else ELECTRO[pattern]
+        g = quiet if brk else 1.0
+        for k, row in pat.items():
+            for i, ch in enumerate(row):
+                if ch != ".":
+                    v = (112 if ch == "x" else 74) * g
+                    h.append((bar * 4 + i / 4, k, int(np.clip(v + rng.normal(0, 5), 8, 127))))
+        if (bar % 8 == 0 and not brk) or (breakdown and bar == breakdown[1]):
+            h.append((bar * 4, "crash", 112))
+        if bar % 8 == 7 and not brk:
+            for j, k in enumerate(["snare"] * 4 + ["tom_hi", "tom_mid", "tom_lo"]):
+                h.append((bar * 4 + 2.25 + j * 0.25, k, 96))
+    return sorted(h)
+
+
+def name_score(truth, pred):
+    """Share of true hits that sit on a pad NAMED like their sound (kick/808 and the three hats
+    count as one family each: putting a hat on Pedal instead of Closed is not a naming disaster,
+    putting it on Crash / Tom is)."""
+    fam = lambda k: {"kick2": "kick", "phh": "hat", "chh": "hat", "ohh": "ohh", "tom_lo": "tom",
+                     "tom_mid": "tom", "tom_hi": "tom", "perc1": "perc", "perc2": "perc"}.get(k, k)
+    pt = np.array([p["t"] for p in pred])
+    pk = [PADS[p["pad"]][0] for p in pred]
+    ok = n = 0
+    for t, k, _ in truth:
+        n += 1
+        if not len(pt):
+            continue
+        idx = np.where(np.abs(pt - t) < 0.03)[0]
+        if any(fam(pk[i]) == fam(k) for i in idx):
+            ok += 1
+    return ok / max(1, n)
+
+
 def score(truth, pred, tol=0.03):
     """Per truth sound: F1 after mapping each predicted pad to the truth sound it mostly hits."""
     keys = sorted({k for _, k, _ in truth})
@@ -149,8 +202,11 @@ def score(truth, pred, tol=0.03):
 
 def run_case(name, beats_hits, bpm, variant, out, drift=0.0, reverb=0.0, seed=0):
     import soundfile as sf
+    tone = None
+    if isinstance(variant, tuple):
+        variant, tone = variant
     hits = beats_to_hits(beats_hits, bpm, drift=drift, seed=seed)
-    snd = kit.kit(variant)
+    snd = kit.kit(variant, tone)
     length = max(t for t, _, _ in hits) + 1
     y = kit.render(hits, snd, length, reverb=reverb, seed=seed)
     wav = os.path.join(out, f"{name}.wav")
@@ -162,7 +218,8 @@ def run_case(name, beats_hits, bpm, variant, out, drift=0.0, reverb=0.0, seed=0)
     ratio = an["bpm"] / bpm
     tempo_ok = any(abs(ratio - r) < 0.02 * r for r in (0.5, 1.0, 2.0))
     return dict(name=name, bpm_true=round(bpm, 2), bpm=an["bpm"], f1=round(f1, 3), fam=round(fam, 3),
-                tempo_ok=tempo_ok, per=res,
+                tempo_ok=tempo_ok, per=res, names=round(name_score(hits, an["hits"]), 3), steady=an["steady"],
+                sections=[(s["label"], s["start"], s["end"]) for s in an["sections"]],
                 sounds=an["n_sounds"], pads=[PADS[p["pad"]][0] for p in an["pads"]], an=an)
 
 
@@ -188,6 +245,12 @@ def cases(quick=False):
         h, bpm = produced_song(st, seed=i)
         out.append((f"prod_{st}", h, float(bpm), (i + 1) % 6, 0.0, 0.2 * (i % 2)))
     out.append(("trap_808_v3", trap_song(seed=3), 143.0, 3, 0.0, 0.4))
+    # dark / processed electronic kits at non-round tempos (the v1 field-test failure)
+    out.append(("electro_pulse_dark", electro_song(32, seed=1), 139.55, (2, "dark"), 0.0, 0.2))
+    out.append(("electro_garage_crushed", electro_song(24, seed=2, pattern="garage", breakdown=(8, 12)), 132.0,
+                (4, "crushed"), 0.0, 0.0))
+    out.append(("house_dark", produced_song("house", seed=9)[0], 124.0, (5, "dark"), 0.0, 0.2))
+    out.append(("boombap_dark", produced_song("boombap", seed=4)[0], 90.0, (1, "crushed"), 0.0, 0.3))
     if not quick and picks:
         h, bpm = gmd.read(picks[0])
         out.append(("live_drift", [x for x in h if x[0] < 64], bpm, 2, 0.012, 0.3))
@@ -208,12 +271,13 @@ def main(argv=None):
         allres.append(r)
         worst = sorted(r["per"].items(), key=lambda kv: kv[1]["f1"])[:3]
         print(f"{name:34s} bpm {r['bpm_true']:6.1f}->{r['bpm']:6.1f} {'ok ' if r['tempo_ok'] else 'BAD'} "
-              f"F1 {r['f1']:.3f} fam {r['fam']:.3f} sounds {r['sounds']:2d}  "
+              f"F1 {r['f1']:.3f} fam {r['fam']:.3f} names {r['names']:.2f} {'S' if r['steady'] else 'D'} sounds {r['sounds']:2d}  "
               f"weakest: " + ", ".join(f"{k} {v['f1']:.2f}(n{v['n']})" for k, v in worst))
     mean = float(np.mean([r["f1"] for r in allres]))
     fam = float(np.mean([r["fam"] for r in allres]))
     tempo = sum(r["tempo_ok"] for r in allres)
-    print(f"MEAN F1 {mean:.3f}  family F1 {fam:.3f}  tempo right {tempo}/{len(allres)}")
+    names = float(np.mean([r["names"] for r in allres]))
+    print(f"MEAN F1 {mean:.3f}  family F1 {fam:.3f}  names {names:.3f}  tempo right {tempo}/{len(allres)}")
     json.dump([{k: v for k, v in r.items() if k != "an"} for r in allres], open(os.path.join(out, "bench.json"), "w"),
               indent=1)
     return 0 if mean >= a.min_f1 else 1
