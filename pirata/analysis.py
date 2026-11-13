@@ -113,10 +113,19 @@ def fit_grid(notes, duration, y22, bpm_hint=None):
     # choose beat phase (which 8th line is "on the beat") by onset weight
     first = offset % per8
     sc = []
+    # bass notes sit on beats far more often than upper comping does
+    wb = np.array([n["amp"] * (4.0 if n["pitch"] < 52 else 1.0) for n in notes]) if notes else np.zeros(0)
+    on0 = float(on.min()) if len(on) else 0.0
     for k in (0, 1):
         t = first + k * per8
-        ph = np.angle(np.sum(w * np.exp(2j * np.pi * (on - t) / beat))) if len(on) else 0
-        sc.append(abs(np.sum(w * np.cos(2 * np.pi * (on - t) / beat))))
+        # signed: onsets ON the beat score +1, onsets on the "and" score -1
+        # (abs() here made the two phases tie and could lock the grid half a beat off)
+        v = float(np.sum(wb * np.cos(2 * np.pi * (on - t) / beat))) if len(on) else 0.0
+        # samples are nearly always cut to start on a beat
+        d = (on0 - t) % beat
+        if min(d, beat - d) < per8 / 2:
+            v += 0.25 * float(wb.sum())
+        sc.append(v)
     start = (first + int(np.argmax(sc)) * per8) % beat
     if start > beat * 0.9:
         start -= beat

@@ -82,7 +82,9 @@ def cmd_build(a):
     mel = []
     if a.mode != "off":
         say(0.3, "Writing melody")
-        mel = arrange.melody(an, a.mode, a.density, a.register, a.seed, chord_notes=upper,
+        # Simple's "chords" track is a single melody line, so arps/registers use the chord symbols
+        mel = arrange.melody(an, a.mode, a.density, a.register, a.seed,
+                             chord_notes=upper if a.detail != "simple" else None,
                              arp_pattern=a.arp_pattern, arp_rate=a.arp_rate, arp_octaves=a.arp_octaves)
     # everything starts on the first bar that has music
     first = min([n["start"] for n in upper + bass + mel], default=0)
@@ -116,7 +118,9 @@ def cmd_build(a):
     end_b = max([n["end"] for n in upper + bass + mel], default=4)
     length = (4 * -(-end_b // 4)) * spb + 2.0
     wav_ch = os.path.join(a.session, "preview_chords.wav")
-    piano.save(wav_ch, piano.render(to_s(upper + bass), length_s=length, gain_db=-4))
+    # Simple previews as the bare one-note line; the root bass stays on the BASS tile
+    heard = upper if a.detail == "simple" else upper + bass
+    piano.save(wav_ch, piano.render(to_s(heard), length_s=length, gain_db=-4))
     res = dict(ok=True, bpm=bpm, key=an["key"], files=files, preview={"chords": wav_ch},
                length_beats=4 * -(-end_b // 4),
                orig_offset=an["grid_start"] + origin * spb,

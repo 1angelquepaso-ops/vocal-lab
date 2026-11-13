@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
     paths: ['pirata/**', 'pirata_plugin/**', 'packaging/pirata_main.py',
-            'packaging/make_pirata_test.py', '.github/workflows/pirata.yml']
+            'packaging/make_pirata_test.py', 'packaging/pirata_melody_test.py',
+            '.github/workflows/pirata.yml']
   workflow_dispatch:
 
 permissions:
@@ -24,6 +25,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install numpy scipy librosa soundfile soxr mido onnxruntime pyinstaller
+
+      - name: Melody regression test (Simple = real melody, Rich = melody on top)
+        run: python packaging/pirata_melody_test.py melody_test
 
       - name: Build engine (pirata-engine.exe)
         run: >

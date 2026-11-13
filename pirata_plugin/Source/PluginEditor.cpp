@@ -285,9 +285,9 @@ PirataEditor::PirataEditor (PirataProcessor& p)
         addAndMakeVisible (*b);
         ++i;
     }
-    simpleBtn.setTooltip ("Triads + root bass: the progression stripped to its bones");
+    simpleBtn.setTooltip ("One-note line: the sample's own melody, in its real rhythm (root bass on the BASS tile)");
     playedBtn.setTooltip ("Exactly the notes found in the sample, cleaned and on the grid");
-    richBtn.setTooltip ("Lush extended voicings (9ths, 11ths, 13ths) that stay in key");
+    richBtn.setTooltip ("The sample's melody on top with lush in-key chords (9ths, 11ths, 13ths) under it + root/10th left hand");
 
     for (int k = 0; k < 6; ++k) modeBox.addItem (modeNames[k], k + 1);
     modeBox.setSelectedItemIndex (proc.mode, juce::dontSendNotification);
