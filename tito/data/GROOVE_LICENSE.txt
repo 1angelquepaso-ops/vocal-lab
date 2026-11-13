@@ -1,0 +1,5 @@
+Groove MIDI Dataset v1.0.0 (MIDI only) by Google LLC / Magenta.
+Jon Gillick, Adam Roberts, Jesse Engel, Douglas Eck, David Bamman,
+"Learning to Groove with Inverse Sequence Transformations", ICML 2019.
+License: Creative Commons Attribution 4.0 International (CC BY 4.0).
+https://magenta.tensorflow.org/datasets/groove
