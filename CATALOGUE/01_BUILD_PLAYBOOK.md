@@ -2,7 +2,7 @@
 
 ## Two patterns we use
 
-**A. Plugin + engine (Harmonizer, PIRATA, MIRRORWALL)**
+**A. Plugin + engine (Harmonizer, PIRATA, MIRRORWALL, TITO PUENTE)**
 - The plugin (C++ / JUCE 8.0.4, VST3) is the window and the audio player.
 - Heavy work (pitch tracking, transcription, fitting) is a Python program frozen into an `.exe` with PyInstaller and
   shipped *inside* the plugin: `PLUGIN.vst3/Contents/Resources/engine/<name>-engine.exe`.
@@ -56,6 +56,15 @@
 | Level match off by up to 6 dB on bright mics | Measure loudness K-weighted (BS.1770) with a speech-shaped test signal, not plain RMS of white noise |
 | Same DSP copied into two plugins drifts apart | Share headers via a CMake include dir (`MEXCORE_DIR`) + add them to the other workflow's `paths:` |
 | New choice options broke nothing in old projects | Keep gear lists append-only (projects store the index); group them in the editor instead |
+| TITO: quiet hats lost under an 808 / room tail | Attack = (post−pre)²/post AND divide every band by its own typical hit level |
+| TITO: hats + 808 grouped as one sound | Same fix; then NNLS per hit judged against the sound's OWN bands |
+| TITO: clap counted twice (bursts 36 ms apart) | Merge look-alikes within 42 ms, keep the first time |
+| TITO: a loudness filter threw away 40 % of ghost notes | Generous onset stage; let NNLS activations drop junk later |
+| TITO: hit times drifted 10-24 ms in dense mixes | Steepest-rise on full OR high-passed signal; never walk back through the background |
+| TITO: librosa tempo picked 108 for an 85 BPM groove | Own phase-coherence tempo scan (16th/8th/beat), octave inside 80-160 BPM, x2 / ÷2 buttons |
+| TITO: engine got "--layers" with an empty value and misread the next flag | Pass optional lists as one token: `--layers=a,b` |
+| TITO: sum of normalised pad sounds peaked at 2.3 | −9 dB sampler headroom (peak 0.97 on a 100 s render) |
+| Google Storage blocked in Claude's workspace | One-time GitHub workflow downloads + verifies the dataset and commits it |
 
 ## Parity rule (MIRRORWALL)
 Python reference DSP (`mirrorwall/dsp.py`) and C++ twin (`mirrorwall_plugin/Source/Chain.h`) must stay identical:

@@ -1,0 +1,76 @@
+name: Build TITO PUENTE
+
+on:
+  push:
+    branches: [main]
+    paths: ['tito/**', 'tito_plugin/**', 'packaging/tito_main.py', 'packaging/tito_test.py',
+            '.github/workflows/tito.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Engine dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy librosa soundfile soxr mido pyinstaller
+
+      - name: Accuracy + round-trip tests (known drum MIDI -> audio -> MIDI)
+        run: python packaging/tito_test.py tito_test
+
+      - name: Build engine (tito-engine.exe)
+        run: >
+          pyinstaller --noconfirm --onedir --console --name tito-engine
+          --paths . --collect-all librosa --collect-all soundfile --collect-all soxr
+          --hidden-import tito.cli --hidden-import mido.backends
+          --add-data "tito/data/styles.json;tito/data"
+          --add-data "tito/data/GROOVE_LICENSE.txt;tito/data"
+          packaging/tito_main.py
+
+      - name: Smoke-test the frozen engine
+        shell: pwsh
+        run: |
+          $e = "dist/tito-engine/tito-engine.exe"
+          & $e factory --out kit_test
+          & $e analyze --session sess --stem tito_test/trap_808.wav --out out_test
+          & $e build --session sess --out out_test --style trap --layers=hats,ghost,shaker --grid 1/32T --fills=every8,prehook --fill-len 4
+          if (-not (Test-Path sess/build.json)) { throw "engine produced no build" }
+          Get-ChildItem out_test
+
+      - name: Build VST3
+        run: |
+          cmake -S tito_plugin -B build -A x64
+          cmake --build build --config Release --target TitoPuente_VST3
+
+      - name: Package (engine + factory kit inside the plugin)
+        shell: pwsh
+        run: |
+          $vst = "build/TitoPuente_artefacts/Release/VST3/TITO PUENTE.vst3"
+          New-Item -ItemType Directory -Force "$vst/Contents/Resources/engine" | Out-Null
+          Copy-Item -Recurse dist/tito-engine/* "$vst/Contents/Resources/engine/"
+          & "$vst/Contents/Resources/engine/tito-engine.exe" factory --out "$vst/Contents/Resources/kit"
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item -Recurse $vst out/
+          Compress-Archive -Path out/* -DestinationPath TITO-PUENTE-Windows.zip -Force
+
+      - name: Publish download (Releases page)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: tito-latest
+          name: TITO PUENTE (latest build)
+          body: |
+            Download **TITO-PUENTE-Windows.zip**, unzip it, and copy the `TITO PUENTE.vst3` folder into
+            `C:\Program Files\Common Files\VST3\`. Rescan plugins in FL Studio, then add it as an instrument (Channel rack).
+            Fills / grooves / drummer feel learned from the Groove MIDI Dataset (Google Magenta, CC BY 4.0).
+          files: TITO-PUENTE-Windows.zip
+          make_latest: false

@@ -7,7 +7,9 @@ on:
                    'packaging/make_pirata_test.py', '.github/workflows/pirata.yml',
                    'mirrorwall/**', 'mirrorwall_plugin/**', 'packaging/mirrorwall_main.py',
                    'packaging/make_mw_test.py', '.github/workflows/mirrorwall.yml',
-                   'dreammic_plugin/**', '.github/workflows/dreammic.yml']
+                   'dreammic_plugin/**', '.github/workflows/dreammic.yml',
+                   'tito/**', 'tito_plugin/**', 'packaging/tito_main.py', 'packaging/tito_test.py',
+                   '.github/workflows/tito.yml', '.github/workflows/tito-dataset.yml']
   workflow_dispatch:
 
 permissions:
