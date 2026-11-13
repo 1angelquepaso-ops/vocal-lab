@@ -16,4 +16,4 @@
 | PIRATA | ~~Simple = melody line, Rich = melody + lush chords, grid phase fix~~ (v2 done); chord-name/bass accuracy on dense comping; .m4a input; optional stem separation; edit chords in the roll; swing/humanise export; skin |
 | MIRRORWALL | 2.0 live (above); capture-based stages (RVox, C-type comps, Avalon); paired-mode fitting UI; wider harmony stacks; preset share/export; skin |
 | DREAMMIC | ~~MEX-EQ filters, more mics/preamps, mic switches, presets, comp/de-ess, level match~~ (v2 done); capture-based mic + preamp models; skin |
-| TITO PUENTE | link duplicate pads / stronger merge; better names for hats/toms; drum separation from full mixes; tempo-map MIDI for live drift; skin |
+| TITO PUENTE | v1.1 done (Nov 13 2026): linked pads, naming rework, tempo-map MIDI, exact BPM, sections, FL tempo warning. Next: peel co-occurring sounds (house kick+clap), drum separation from full mixes, skin |
