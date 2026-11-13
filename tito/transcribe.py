@@ -967,8 +967,12 @@ def beat_grid(mono22, M, times, H, pad_of, bpm_hint=None, bpm_start=None):
     if steady:
         # phase: best fit of all hits (weighted) to the straight grid
         w = H.sum(axis=1) if len(H) else np.ones(len(times))
-        ph = np.angle(np.sum(w * np.exp(2j * np.pi * times / period)))
-        off = (ph / (2 * np.pi)) * period
+        # 16th-grid phase first (every hit votes, syncopation can't bias it), then which of
+        # the four 16ths is the beat
+        ph16 = np.angle(np.sum(w * np.exp(2j * np.pi * 4 * times / period)))
+        off16 = (ph16 / (2 * np.pi)) * period / 4
+        cands = [off16 + k * period / 4 for k in range(4)]
+        off = max(cands, key=lambda o: float(np.real(np.sum(w * np.exp(2j * np.pi * (times - o) / period)))))
         first = off % period
         n = int((times[-1] - first) / period) + 3 if len(times) else 8
         bt = first + period * np.arange(-1, n)
@@ -985,6 +989,13 @@ def beat_grid(mono22, M, times, H, pad_of, bpm_hint=None, bpm_start=None):
         sc.append(np.sum(kick[on & (pos == 0)]) * 1.0 + np.sum(kick[on & (pos == 2)]) * 0.4
                   + np.sum(snare[on & ((pos == 1) | (pos == 3))]) * 1.0
                   - np.sum(snare[on & (pos == 0)]) * 0.5 + np.sum(crash[on & (pos == 0)]) * 1.5)
+    # songs usually start on a "1": a mild nudge toward the phase that puts the first
+    # clear hit on a downbeat (only decides near-ties)
+    if len(times):
+        i0 = int(np.clip(bi[0], 0, len(bt) - 1))
+        for ph in range(4):
+            if (i0 - ph) % 4 == 0 and on[0]:
+                sc[ph] += 0.2 * max(sc)
     phase = int(np.argmax(sc))
     # bar 1 starts at the downbeat at or before the first hit
     first_hit = times[0] if len(times) else 0
@@ -1100,12 +1111,17 @@ def sections(hits, n_bars, bar_db=None):
         nov[b] = (1 - a @ c / (np.linalg.norm(a) * np.linalg.norm(c) + 1e-9)) + \
             0.6 * min(1.0, abs(d1 - d2) / 6.0) + 0.4 * abs(n1 - n2) / (max(n1, n2) + 1e-9) + 0.25 * crash_on_1[b]
     bounds = [0]
-    thr = max(0.15, np.percentile(nov, 85))
+    # bounded threshold (a long break would otherwise lift the percentile above its own edges)
+    # + the change must be the biggest one within 2 bars
+    thr = float(np.clip(np.percentile(nov, 85), 0.25, 0.8))
     for b in range(4, n_bars - 3):
         if b - bounds[-1] < 4:
             continue
-        if nov[b] >= thr and (b % 4 == 0 or nov[b] > 1.5 * thr):
+        peak = nov[b] >= nov[max(0, b - 2):b + 3].max() - 1e-9
+        if nov[b] >= thr and peak and (b % 4 == 0 or nov[b] > 1.5 * thr):
             bounds.append(b)
+        elif nov[b] >= thr and b % 4 == 0 and nov[b] >= 0.9 * nov[max(0, b - 2):b + 3].max():
+            bounds.append(b)                      # on the 4-bar line and nearly the peak: prefer the line
     bounds.append(n_bars)
     segs = [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)]
     def letter_of(segs):
@@ -1156,8 +1172,19 @@ def sections(hits, n_bars, bar_db=None):
         for i in range(len(segs)):
             if letters[i] == hl and labels[i] == "Verse":
                 labels[i] = "Hook"
-    for i in range(1, len(segs)):
-        if labels[i - 1] in ("Breakdown", "Build") and labels[i] == "Verse" and loud[i]:
+    # what comes back loud after a breakdown is the hook (a short part in between is the build)
+    for i in range(len(segs) - 1):
+        if labels[i] != "Breakdown":
+            continue
+        j = i + 1
+        if j + 1 < len(segs) and not loud[j] and segs[j][1] - segs[j][0] <= 8 and loud[j + 1]:
+            labels[j] = "Build"
+            j += 1
+        if loud[j] and labels[j] in ("Verse", "Hook"):
+            labels[j] = "Hook"
+    hook_letters = {letters[i] for i in range(len(segs)) if labels[i] == "Hook"}
+    for i in range(len(segs)):
+        if letters[i] in hook_letters and labels[i] == "Verse" and loud[i]:
             labels[i] = "Hook"
     # build: a short part rising into a hook
     for i in range(1, len(segs) - 1):
@@ -1192,6 +1219,40 @@ def sections(hits, n_bars, bar_db=None):
         if dev > 0.25 or busy:
             fills.append(dict(bar=int(b), dev=round(float(dev), 2)))
     return out, fills
+
+
+FAMILY_OF = {"kick": "kick", "kick2": "kick", "chh": "hat", "phh": "hat", "ohh": "hat", "snare": "snare",
+             "clap": "snare", "rim": "snare", "perc1": "perc", "perc2": "perc", "fx": "perc",
+             "tom_lo": "tom", "tom_mid": "tom", "tom_hi": "tom", "crash": "cym", "ride": "cym"}
+
+
+def linked_pads(T, H, typ, pad_of, feats, sim=0.8, together=0.15):
+    """One drum split over several pads (long songs: the same hat at two velocities / with two
+    backgrounds): same family, look-alike attack, and they take turns instead of layering.
+    Returns groups of pad indexes the plugin swaps together."""
+    ks = [k for k in pad_of if k < len(T)]
+    if len(ks) < 2:
+        return []
+    S = _shape(T)
+    act = H >= 0.3 * typ[None, :]
+    parent = {k: k for k in ks}
+    def find(x):
+        while parent[x] != x:
+            x = parent[x]
+        return x
+    for i, a in enumerate(ks):
+        for b in ks[i + 1:]:
+            if FAMILY_OF.get(pad_of[a]) != FAMILY_OF.get(pad_of[b]):
+                continue
+            if pad_of[a] in TOM_KEYS and pad_of[b] in TOM_KEYS:
+                continue                                  # toms are meant to differ (lo/mid/hi)
+            both = np.sum(act[:, a] & act[:, b]) / max(1, min(act[:, a].sum(), act[:, b].sum()))
+            if (S[a] @ S[b] > sim and both < together) or (S[a] @ S[b] > sim - 0.08 and both < 0.05):
+                parent[find(a)] = find(b)
+    groups = {}
+    for k in ks:
+        groups.setdefault(find(k), []).append(PAD_INDEX[pad_of[k]])
+    return [sorted(g) for g in groups.values() if len(g) > 1]
 
 
 # ------------------------------------------------------------------ chops
@@ -1378,8 +1439,9 @@ def analyze(path, out_dir, bpm=None, sensitivity=0.5, progress=None):
                              features={a: round(b, 3) if isinstance(b, float) else b for a, b in ft.items()
                                        if not a.startswith("_")}))
     pads.sort(key=lambda p: p["pad"])
+    links = linked_pads(T, H, typ, pad_of, feats)
     say(0.98, "Done")
     return dict(file=os.path.abspath(path), duration=dur, bpm=grid["bpm"], steady=grid["steady"],
                 t0=grid["t0"], beats=grid["beats"], period=grid["period"], bars=n_bars,
-                hits=hits, pads=pads, sections=secs, song_fills=song_fills,
+                hits=hits, pads=pads, sections=secs, song_fills=song_fills, links=links,
                 n_onsets=int(len(times)), n_sounds=int(len(T)))

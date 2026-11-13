@@ -108,6 +108,7 @@ private:
     juce::TextButton loadBtn { "Load drum track" }, reanalyzeBtn { "Re-analyze" }, x2Btn { "x2" }, halfBtn { juce::CharPointer_UTF8 ("\xc3\xb7" "2") };
     juce::Label stemName, info, bpmLabel { {}, "BPM" }, sensLabel { {}, "Sensitivity" };
     juce::TextEditor bpmBox;
+    juce::ComboBox tempoFixBox;          // 3:2 / 4:3 tempo traps (x2 / ÷2 are the buttons)
     juce::Slider sens { juce::Slider::LinearHorizontal, juce::Slider::NoTextBox };
     juce::ComboBox feelBox, qgridBox;
 
@@ -128,6 +129,7 @@ private:
     juce::TextButton loopBtn { "Loop" }, reverseBtn { "Reverse" }, loadSoundBtn { "Load sound..." },
                      shufflePadBtn { "Shuffle pad" }, revertBtn { "Song chop" }, factoryBtn { "Factory" };
     juce::ComboBox chokeBox, outBox;
+    juce::TextButton linkBtn { "Link pads" };
 
     // groove layers
     juce::Label grooveHead { {}, "GROOVE LAYERS" }, gridLabel { {}, "Grid" }, swingLabel { {}, "Swing" },
@@ -149,7 +151,7 @@ private:
     juce::TextButton playBtn { "Play" }, openFolderBtn { "Open folder" };
     juce::ToggleButton hearBtn[4] { juce::ToggleButton ("Song"), juce::ToggleButton ("Layers"), juce::ToggleButton ("Fills"),
                                     juce::ToggleButton ("Original") };
-    juce::Label timeLabel, status, dragHint;
+    juce::Label timeLabel, status, dragHint, tempoWarn;
     double progress = -1.0;
     juce::ProgressBar progressBar { progress };
     DragTile songTile { "FULL SONG", juce::Colour (0xffe0a84a) }, layersTile { "GROOVE LAYERS", juce::Colour (0xff6fa8dc) },
@@ -176,6 +178,8 @@ private:
     void refreshPadEditor();
     void refresh();
     void shufflePad (int i);
+    void loadToPad (int i, const juce::File& f, const juce::String& source);   // + its linked pads
+    void updateTempoWarning();
     void saveKit();
     void loadKit();
     void chooseSoundFolder();

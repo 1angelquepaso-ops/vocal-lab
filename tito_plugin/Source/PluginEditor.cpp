@@ -240,6 +240,14 @@ void PadButton::paint (juce::Graphics& g)
         g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
         g.drawText ("LOCK", (int) r.getRight() - 42, (int) r.getBottom() - 18, 36, 12, juce::Justification::right);
     }
+    if (proc.linkPads && ! proc.linkedWith (index).empty())
+    {
+        // two small rings = linked to another pad (same drum)
+        g.setColour (juce::Colour (0xff6fa8dc));
+        const float x = r.getRight() - 22.0f, y = r.getY() + 22.0f;
+        g.drawEllipse (x, y, 8.0f, 6.0f, 1.4f);
+        g.drawEllipse (x + 5.0f, y, 8.0f, 6.0f, 1.4f);
+    }
 }
 
 void PadButton::mouseDown (const juce::MouseEvent& e)
@@ -333,7 +341,7 @@ TitoEditor::TitoEditor (TitoProcessor& p)
 {
     loadingUi = true;
     // ---- top bar
-    for (auto* l : { &stemName, &info, &bpmLabel, &sensLabel, &folderLabel, &padTitle, &padSource, &timeLabel, &status, &dragHint,
+    for (auto* l : { &stemName, &info, &bpmLabel, &sensLabel, &folderLabel, &padTitle, &padSource, &timeLabel, &status, &dragHint, &tempoWarn,
                      &lStart, &lLength, &lPitch, &lDecay, &lVolume, &lPan, &lChoke, &lOut, &gridLabel, &swingLabel, &humanLabel,
                      &styleLabel, &lenLabel, &intLabel })
     {
@@ -354,6 +362,9 @@ TitoEditor::TitoEditor (TitoProcessor& p)
     dragHint.setText ("Drag into FL", juce::dontSendNotification);
     dragHint.setColour (juce::Label::textColourId, dim);
     dragHint.setJustificationType (juce::Justification::centred);
+    tempoWarn.setColour (juce::Label::textColourId, juce::Colour (0xffffa94d));
+    tempoWarn.setJustificationType (juce::Justification::centredLeft);
+    tempoWarn.setFont (juce::FontOptions (12.5f, juce::Font::bold));
 
     addAndMakeVisible (loadBtn);
     loadBtn.setColour (juce::TextButton::buttonColourId, accent.darker (0.35f));
@@ -374,6 +385,23 @@ TitoEditor::TitoEditor (TitoProcessor& p)
     }
     x2Btn.setTooltip ("Double the tempo (the song was read at half time)");
     halfBtn.setTooltip ("Halve the tempo (the song was read at double time)");
+    addAndMakeVisible (tempoFixBox);
+    tempoFixBox.setTextWhenNothingSelected ("3:2");
+    tempoFixBox.addItem (juce::CharPointer_UTF8 ("\xc3\x97" "2/3  (read 3:2 too fast)"), 1);
+    tempoFixBox.addItem (juce::CharPointer_UTF8 ("\xc3\x97" "3/2  (read 2:3 too slow)"), 2);
+    tempoFixBox.addItem (juce::CharPointer_UTF8 ("\xc3\x97" "3/4  (read 4:3 too fast)"), 3);
+    tempoFixBox.addItem (juce::CharPointer_UTF8 ("\xc3\x97" "4/3  (read 3:4 too slow)"), 4);
+    tempoFixBox.setTooltip ("Swung / triplet grooves can be read at a 3:2 or 4:3 tempo. Pick the fix: the song is re-read at that tempo.");
+    tempoFixBox.onChange = [this]
+    {
+        const int id = tempoFixBox.getSelectedId();
+        tempoFixBox.setSelectedId (0, juce::dontSendNotification);
+        const double cur = proc.analysis.isObject() ? (double) proc.analysis["bpm"] : bpmBox.getText().getDoubleValue();
+        if (cur <= 0 || id < 1 || id > 4) return;
+        const double r[] = { 2.0 / 3.0, 1.5, 0.75, 4.0 / 3.0 };
+        bpmBox.setText (juce::String (cur * r[id - 1], 2), juce::dontSendNotification);
+        analyze();
+    };
     addAndMakeVisible (bpmBox);
     bpmBox.setJustification (juce::Justification::centred);
     bpmBox.setInputRestrictions (6, "0123456789.");
@@ -406,7 +434,8 @@ TitoEditor::TitoEditor (TitoProcessor& p)
         pb->onPress = [this] (int idx, float vel) { selectPad (idx); proc.audition (idx, vel); };
         pb->onDropFile = [this] (int idx, juce::File f)
         {
-            if (proc.loadPadFile (idx, f, "user")) { selectPad (idx); proc.status = "Pad " + juce::String (idx + 1) + ": " + f.getFileName(); }
+            loadToPad (idx, f, "user");
+            selectPad (idx);
             refresh();
         };
     }
@@ -474,7 +503,7 @@ TitoEditor::TitoEditor (TitoProcessor& p)
         chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                               [this] (const juce::FileChooser& fc)
                               {
-                                  if (fc.getResult().existsAsFile()) proc.loadPadFile (proc.selectedPad, fc.getResult(), "user");
+                                  if (fc.getResult().existsAsFile()) loadToPad (proc.selectedPad, fc.getResult(), "user");
                                   refresh();
                               });
     };
@@ -493,6 +522,13 @@ TitoEditor::TitoEditor (TitoProcessor& p)
         if (f.existsAsFile()) proc.loadPadFile (proc.selectedPad, f, "factory");
         refresh();
     };
+
+    addAndMakeVisible (linkBtn);
+    styleToggle (linkBtn);
+    linkBtn.setToggleState (proc.linkPads, juce::dontSendNotification);
+    linkBtn.onClick = [this] { proc.linkPads = linkBtn.getToggleState(); refresh(); };
+    linkBtn.setTooltip ("TITO found the same drum on more than one pad (it plays at two levels / over two backgrounds). "
+                        "Linked: loading or shuffling a sound on one changes them all.");
 
     // ---- groove layers
     addAndMakeVisible (gridBox);
@@ -574,6 +610,7 @@ TitoEditor::TitoEditor (TitoProcessor& p)
     for (auto* t : { &songTile, &layersTile, &fillsTile, &allTile })
         addAndMakeVisible (*t);
     addAndMakeVisible (dragHint);
+    addAndMakeVisible (tempoWarn);
     addAndMakeVisible (openFolderBtn);
     openFolderBtn.onClick = [this] { exportDir().startAsProcess(); };
     addAndMakeVisible (progressBar);
@@ -719,6 +756,7 @@ void TitoEditor::analyze()
 void TitoEditor::applyAnalysis (const juce::var& r)
 {
     proc.analysis = r;
+    proc.readLinks (r);
     if (proc.bpmOverride <= 0)
         bpmBox.setText (juce::String ((double) r["bpm"], 2), juce::dontSendNotification);
     std::array<bool, tito::numPads> got {};
@@ -904,9 +942,46 @@ void TitoEditor::shufflePad (int i)
         return;
     }
     const auto f = library.pick (tito::padInfo[i].type, rng);
-    if (f.existsAsFile() && proc.loadPadFile (i, f, "user"))
+    if (f.existsAsFile())
+    {
+        loadToPad (i, f, "user");
         proc.pads.setParams (i, tito::PadParams {});
+        if (proc.linkPads)
+            for (int q : proc.linkedWith (i))
+                if (! proc.meta[(size_t) q].locked) proc.pads.setParams (q, tito::PadParams {});
+    }
     if (i == proc.selectedPad) refreshPadEditor();
+}
+
+void TitoEditor::loadToPad (int i, const juce::File& f, const juce::String& source)
+{
+    if (! proc.loadPadFile (i, f, source)) return;
+    juce::String also;
+    if (proc.linkPads)
+        for (int q : proc.linkedWith (i))
+            if (! proc.meta[(size_t) q].locked && proc.loadPadFile (q, f, source))
+                also << (also.isEmpty() ? "" : ", ") << (q + 1);
+    proc.status = "Pad " + juce::String (i + 1) + (also.isNotEmpty() ? " (+ linked " + also + ")" : juce::String()) + ": " + f.getFileName();
+}
+
+void TitoEditor::updateTempoWarning()
+{
+    juce::String msg;
+    const auto& a = proc.analysis;
+    const double host = proc.hostBpm.load();
+    if (a.isObject())
+    {
+        const double song = (double) a["bpm"];
+        const bool steady = (bool) a["steady"];
+        if (host > 0 && song > 0 && std::abs (host - song) > 0.05)
+            msg = "FL is at " + juce::String (host, std::abs (host - std::round (host)) < 0.005 ? 0 : 2) + " BPM, the song is "
+                  + juce::String (song, std::abs (song - std::round (song)) < 0.005 ? 0 : 2)
+                  + (steady ? " - set FL to the song's BPM before dragging, or the MIDI plays at the wrong speed."
+                            : " (live tempo) - see the tip on FULL SONG.");
+        else if (! steady && proc.build.isObject() && (bool) proc.build["tempo_map"])
+            msg = "Live tempo: the MIDI carries the band's tempo changes. Drag = FL's grid; File > Import > MIDI keeps the real timing.";
+    }
+    if (tempoWarn.getText() != msg) tempoWarn.setText (msg, juce::dontSendNotification);
 }
 
 void TitoEditor::chooseSoundFolder()
@@ -997,7 +1072,8 @@ void TitoEditor::refresh()
     const auto& a = proc.analysis;
     stemName.setText (proc.stemFile.existsAsFile() ? proc.stemFile.getFileName() : "No drum track loaded", juce::dontSendNotification);
     if (a.isObject())
-        info.setText (juce::String ((double) a["bpm"], 1) + " BPM   " + juce::String ((int) a["bars"]) + " bars   "
+        info.setText (juce::String ((double) a["bpm"], std::abs ((double) a["bpm"] - std::round ((double) a["bpm"])) < 0.005 ? 0 : 2)
+                      + " BPM   " + juce::String ((int) a["bars"]) + " bars   "
                       + juce::String ((int) a["hits"]) + " hits" + ((bool) a["steady"] ? juce::String() : juce::String ("   live tempo")),
                       juce::dontSendNotification);
     else
@@ -1006,6 +1082,21 @@ void TitoEditor::refresh()
     playBtn.setButtonText (proc.isPlaying() ? "Stop" : "Play");
     playBtn.setEnabled (proc.build.isObject());
     for (auto* b : { &loadBtn, &reanalyzeBtn, &x2Btn, &halfBtn }) b->setEnabled (! busy);
+    tempoFixBox.setEnabled (! busy && proc.analysis.isObject());
+    {
+        const auto others = proc.linkedWith (proc.selectedPad);
+        juce::String t = "Link pads";
+        if (! others.empty())
+        {
+            t = proc.linkPads ? "Linked with pad" : "Not linked: pad";
+            t << (others.size() > 1 ? "s " : " ");
+            for (size_t k = 0; k < others.size(); ++k) t << (k ? ", " : "") << (others[k] + 1);
+        }
+        linkBtn.setButtonText (t);
+        linkBtn.setEnabled (! others.empty());
+        linkBtn.setToggleState (proc.linkPads && ! others.empty(), juce::dontSendNotification);
+    }
+    updateTempoWarning();
     reanalyzeBtn.setEnabled (! busy && proc.stemFile.existsAsFile());
     progressBar.setVisible (busy);
     folderLabel.setText (proc.soundFolder.isDirectory()
@@ -1029,6 +1120,7 @@ void TitoEditor::timerCallback()
         }
         else progress = -1.0;
     }
+    updateTempoWarning();
     if (buildDue > 0 && juce::Time::currentTimeMillis() >= buildDue)
     {
         buildDue = 0;
@@ -1093,6 +1185,8 @@ void TitoEditor::resized()
     right.removeFromRight (10);
     reanalyzeBtn.setBounds (right.removeFromRight (90));
     right.removeFromRight (6);
+    tempoFixBox.setBounds (right.removeFromRight (56).reduced (0, 2));
+    right.removeFromRight (4);
     halfBtn.setBounds (right.removeFromRight (34));
     x2Btn.setBounds (right.removeFromRight (34));
     right.removeFromRight (4);
@@ -1147,6 +1241,7 @@ void TitoEditor::resized()
     loadSoundBtn.setBounds (br.removeFromLeft (br.getWidth() / 2 - 3)); br.removeFromLeft (6); shufflePadBtn.setBounds (br);
     auto bl2 = colL.removeFromTop (34).reduced (0, 4);
     revertBtn.setBounds (bl2.removeFromLeft (bl2.getWidth() / 2 - 3)); bl2.removeFromLeft (6); factoryBtn.setBounds (bl2);
+    linkBtn.setBounds (colR.removeFromTop (34).reduced (0, 4));
 
     // groove layers (bottom left) + fills (bottom right)
     const int by = H - 226;
@@ -1198,6 +1293,7 @@ void TitoEditor::resized()
     tr.removeFromLeft (10);
     timeLabel.setBounds (tr.removeFromLeft (140));
     progressBar.setBounds (tr.removeFromRight (260).reduced (0, 6));
+    tempoWarn.setBounds (tr.reduced (6, 0));
 
     // exports
     auto ex = juce::Rectangle<int> (12, H - 52, W - 24, 40);

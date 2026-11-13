@@ -2,6 +2,8 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "Pads.h"
+#include <algorithm>
+#include <vector>
 
 // TITO PUENTE: an instrument. FL's piano roll (notes 36-51) plays the 16 pads.
 // The window can also preview the extracted song / groove layers / fills through
@@ -63,6 +65,36 @@ public:
     bool fillWhere[3] { false, false, false };               // every8, every16, prehook
     double swing = 0.0, human = 0.6, intensity = 0.6;
     bool crash = true, room = true;
+
+    // FL's tempo (read every audio block) - the window warns when it doesn't match the song
+    std::atomic<double> hostBpm { 0.0 };
+    // pads that hold the same drum (engine-detected); swapping one swaps them all while linkPads
+    std::vector<std::vector<int>> padLinks;
+    bool linkPads = true;
+    std::vector<int> linkedWith (int pad) const
+    {
+        for (const auto& g : padLinks)
+            if (std::find (g.begin(), g.end(), pad) != g.end())
+            {
+                std::vector<int> out;
+                for (int q : g) if (q != pad) out.push_back (q);
+                return out;
+            }
+        return {};
+    }
+    void readLinks (const juce::var& analysisResult)
+    {
+        padLinks.clear();
+        if (auto* arr = analysisResult["links"].getArray())
+            for (auto& g : *arr)
+                if (auto* ga = g.getArray())
+                {
+                    std::vector<int> v;
+                    for (auto& x : *ga)
+                        if ((int) x >= 0 && (int) x < tito::numPads) v.push_back ((int) x);
+                    if (v.size() > 1) padLinks.push_back (std::move (v));
+                }
+    }
 
     juce::AudioFormatManager formats;
     juce::File factoryDir() const;

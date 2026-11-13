@@ -122,6 +122,10 @@ void TitoProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     juce::ScopedNoDenormals noDenormals;
     const int n = buffer.getNumSamples();
     buffer.clear();
+    if (auto* ph = getPlayHead())
+        if (auto pos = ph->getPosition())
+            if (auto b = pos->getBpm())
+                hostBpm.store (*b);
 
     // destinations: main + enabled pad outputs
     std::array<juce::AudioBuffer<float>, tito::numPads + 1> views;
@@ -275,6 +279,7 @@ void TitoProcessor::getStateInformation (juce::MemoryBlock& dest)
     st.setProperty ("intensity", intensity, nullptr);
     st.setProperty ("crash", crash, nullptr);
     st.setProperty ("room", room, nullptr);
+    st.setProperty ("linkPads", linkPads, nullptr);
     juce::String l, w;
     for (bool b : lay) l << (b ? "1" : "0");
     for (bool b : fillWhere) w << (b ? "1" : "0");
@@ -322,6 +327,8 @@ void TitoProcessor::setStateInformation (const void* data, int size)
     fillLen = st.getProperty ("fillLen", 2); seed = st.getProperty ("seed", 1);
     swing = st["swing"]; human = st.getProperty ("human", 0.6); intensity = st.getProperty ("intensity", 0.6);
     crash = st.getProperty ("crash", true); room = st.getProperty ("room", true);
+    linkPads = st.getProperty ("linkPads", true);
+    readLinks (analysis);
     const auto l = st["layers"].toString(), w = st["fills"].toString();
     for (int i = 0; i < 5; ++i) lay[i] = l[i] == '1';
     for (int i = 0; i < 3; ++i) fillWhere[i] = w[i] == '1';

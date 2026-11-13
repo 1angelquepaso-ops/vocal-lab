@@ -30,7 +30,7 @@ def cmd_analyze(a):
                 t0=round(an["t0"], 4), hits=len(an["hits"]), sounds=an["n_sounds"],
                 pads=[dict(pad=p["pad"], key=p["key"], name=NAMES[p["pad"]], file=p["file"], hits=p["hits"])
                       for p in an["pads"]],
-                sections=an["sections"], song_fills=an["song_fills"])
+                sections=an["sections"], song_fills=an["song_fills"], links=an.get("links", []))
 
 
 def _compact(notes):
