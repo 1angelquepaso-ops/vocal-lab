@@ -808,12 +808,134 @@ def coherent_tempo(times, H):
     return float(fine[int(np.argmax(f))])
 
 
-def beat_grid(mono22, M, times, H, pad_of, bpm_hint=None):
+def hit_grid_fit(times, w, period, win_beats=16):
+    """Is the song on ONE straight grid? Judged on the hits themselves (not on a beat
+    tracker's jittery beats): the grid phase of every 16-beat window should be the same.
+    A steady linear phase drift = the period is a hair off -> corrected. Returns
+    (steady, refined period, worst window deviation in seconds)."""
+    if len(times) < 16:
+        return False, period, 1.0
+    for _ in range(3):
+        span = win_beats * period
+        cs, offs, ws = [], [], []
+        for a in np.arange(times[0], times[-1], span / 2):
+            m = (times >= a) & (times < a + span)
+            if m.sum() < 6:
+                continue
+            # 16th-note grid phase: syncopation can't flip it by half a beat like the beat phase
+            z = np.sum(w[m] * np.exp(2j * np.pi * 4 * times[m] / period))
+            if abs(z) < 0.2 * w[m].sum():           # no clear grid in this window (fill, break)
+                continue
+            cs.append(a + span / 2)
+            offs.append(np.angle(z))
+            ws.append(w[m].sum())
+        if len(cs) < 3:
+            return False, period, 1.0
+        ph = np.unwrap(np.array(offs)) / (2 * np.pi) * period / 4      # seconds
+        cs = np.array(cs)
+        b, a0 = np.polyfit(cs, ph, 1, w=np.sqrt(ws))
+        if abs(b) < 1e-6:
+            break
+        period = period / (1 - b)          # hits drift later and later = true beat is longer
+    dev = float(np.max(np.abs(ph - np.polyval([b, a0], cs))))
+    return dev < 0.022, float(period), dev
+
+
+def metric_check(times, H, pad_of, bpm):
+    """3:2 / 4:3 tempo traps (live rock read as 144 instead of 96, reggae 141 as 106): at the
+    true tempo the kick and snare land ON beats; at a 3:2-off tempo half of them fall between.
+    Returns the tempo to use (x2 / ÷2 stay the user's call: same grid, other count)."""
+    def act(keys):
+        idx = [k for k, v in pad_of.items() if v in keys]
+        return H[:, idx].sum(axis=1) if idx else np.zeros(len(times))
+    k, s_ = act({"kick", "kick2"}), act({"snare", "clap", "rim"})
+    w = k / (k.max() + 1e-12) + s_ / (s_.max() + 1e-12)
+    W = np.sqrt(H.sum(axis=1) + 1e-12)
+    if w.sum() < 4 or len(times) < 32:
+        return bpm
+    def onbeat(b):
+        P = 60 / b
+        ph = np.angle(np.sum(w * np.exp(2j * np.pi * times / P))) / (2 * np.pi)
+        fr = (times / P - ph) % 1
+        return float(np.sum(w * (np.minimum(fr, 1 - fr) < 0.1)) / w.sum())
+    def coh(b):
+        return float(np.abs(np.sum(W * np.exp(2j * np.pi * 4 * times / (60 / b)))) / W.sum())
+    base_on, base_coh = onbeat(bpm), coh(bpm)
+    best, best_on = bpm, base_on
+    for r in (2 / 3, 3 / 2, 3 / 4, 4 / 3):
+        c = bpm * r
+        if not 55 <= c <= 200:
+            continue
+        o = onbeat(c)
+        if o > best_on + 0.12 and coh(c) >= 0.85 * base_coh:
+            best, best_on = c, o
+    if best != bpm:
+        while best > 160:
+            best /= 2
+        while best < 80:
+            best *= 2
+    return best
+
+
+def smooth_beat_map(bt, times, w, period, win_beats=16):
+    """Drifting (live) song: the beat tracker's beats wobble by tens of ms. Anchor the map on
+    the hits instead: in every 16-beat window find the local tempo and the 16th-grid phase,
+    snap the tracker's beat nearest the window centre onto it, then run a smooth monotone
+    curve through those anchors. The beat map (and the MIDI tempo map built from it) then
+    follows the band, not the tracker's jitter."""
+    from scipy.interpolate import PchipInterpolator
+    if len(bt) < 12 or len(times) < 32:
+        return bt
+    anchors = []
+    for c in bt[::4]:
+        m = np.abs(times - c) < win_beats * period / 2
+        if m.sum() < 8:
+            continue
+        ps = period * np.linspace(0.97, 1.03, 61)
+        z = [np.sum(w[m] * np.exp(2j * np.pi * 4 * times[m] / p)) for p in ps]
+        j = int(np.argmax(np.abs(z)))
+        if np.abs(z[j]) < 0.2 * w[m].sum():
+            continue
+        p_loc = ps[j]
+        q = p_loc / 4
+        ph = np.angle(z[j]) / (2 * np.pi) * q                    # 16th grid offset (s)
+        i = int(np.argmin(np.abs(bt - c)))
+        g = ph + q * np.round((bt[i] - ph) / q)                  # tracker beat -> nearest 16th line
+        if abs(g - bt[i]) < q / 2:
+            anchors.append((i, g))
+    if len(anchors) < 4:
+        return bt
+    idx = np.array([a for a, _ in anchors], float)
+    tt = np.array([b for _, b in anchors])
+    keep = np.concatenate([[True], np.diff(tt) > 0])
+    idx, tt = idx[keep], tt[keep]
+    if len(idx) < 4:
+        return bt
+    from scipy.interpolate import UnivariateSpline
+    # smoothing spline: anchors may be off by a few ms (a snapped 16th); the band's tempo isn't
+    try:
+        f = UnivariateSpline(idx, tt, k=3, s=len(idx) * 0.008 ** 2)
+    except Exception:                                     # noqa: BLE001
+        f = PchipInterpolator(idx, tt, extrapolate=True)
+    k = np.arange(len(bt), dtype=float)
+    out = f(k)
+    # outside the anchored stretch: continue at the edge tempo
+    lo, hi = int(idx[0]), int(idx[-1])
+    p0 = float(f(idx[0] + 1) - f(idx[0]))
+    p1 = float(f(idx[-1]) - f(idx[-1] - 1))
+    out[:lo] = f(idx[0]) - p0 * (idx[0] - k[:lo])
+    out[hi + 1:] = f(idx[-1]) + p1 * (k[hi + 1:] - idx[-1])
+    return out if np.all(np.diff(out) > 0) else bt
+
+
+def beat_grid(mono22, M, times, H, pad_of, bpm_hint=None, bpm_start=None):
     import librosa
     oe = onset_curve(M)
     fps = ASR / HOP
     if bpm_hint:
         bpm0 = float(bpm_hint)
+    elif bpm_start:
+        bpm0 = float(bpm_start)
     else:
         bpm0 = coherent_tempo(times, H)
     _, beats = librosa.beat.beat_track(onset_envelope=oe, sr=ASR, hop_length=HOP, bpm=bpm0,
@@ -828,13 +950,20 @@ def beat_grid(mono22, M, times, H, pad_of, bpm_hint=None):
     resid = bt - np.polyval(p, k)
     period = float(p[0])
     steady = float(np.sqrt(np.mean(resid ** 2))) < 0.018
+    # machine-made tracks: the hits sit on one straight grid even when the beat tracker wobbles
+    wts = np.sqrt(H.sum(axis=1)) if len(H) else np.ones(len(times))
+    ok, p2, _ = hit_grid_fit(times, wts, period if abs(60 / period - bpm0) < 0.06 * bpm0 else 60 / bpm0)
+    if ok:
+        steady, period = True, p2
     bpm = 60 / period
     if bpm_hint:
         bpm = float(bpm_hint)
         period = 60 / bpm
-    elif abs(bpm - round(bpm)) < 0.2:
+    elif abs(bpm - round(bpm)) < (0.05 if ok else 0.2):
         bpm = float(round(bpm))
         period = 60 / bpm
+    if not steady:
+        bt = smooth_beat_map(bt, times, wts, 60 / bpm0 if not bpm_hint else period)
     if steady:
         # phase: best fit of all hits (weighted) to the straight grid
         w = H.sum(axis=1) if len(H) else np.ones(len(times))
@@ -929,8 +1058,24 @@ P_K, P_K2, P_SN, P_CL, P_RIM = (PAD_INDEX[k] for k in ("kick", "kick2", "snare",
 
 
 # ------------------------------------------------------------------ sections
-def sections(hits, n_bars):
-    """Split the song where the bar patterns change; label Intro/Verse/Hook/..."""
+def bar_loudness(mono22, beats, period, n_bars):
+    """Audio level (dB) of every bar on the beat map."""
+    bt = np.asarray(beats, float)
+    ext = np.concatenate([bt, bt[-1] + period * np.arange(1, 4 * n_bars + 8)])
+    out = np.full(n_bars, -90.0)
+    for b in range(n_bars):
+        a, e = int(ext[4 * b] * ASR), int(ext[min(len(ext) - 1, 4 * b + 4)] * ASR)
+        seg = mono22[max(0, a):max(0, e)]
+        if len(seg) > 64:
+            out[b] = 10 * np.log10(np.mean(seg.astype(np.float64) ** 2) + 1e-12)
+    return out
+
+
+def sections(hits, n_bars, bar_db=None):
+    """Split the song where the bar patterns or the level change; label Intro / Verse / Hook /
+    Breakdown / Build / Bridge / Outro. Labels use the real loudness and hit density of each
+    part (a quiet sparse middle part is a Breakdown, the loudest part that comes back is the
+    Hook, a part that rises into the Hook is a Build)."""
     if n_bars < 4:
         return [dict(start=0, end=n_bars, label="Loop")], []
     P = np.zeros((n_bars, 16, 16))
@@ -940,18 +1085,22 @@ def sections(hits, n_bars):
             P[b, h["pad"], int((h["beat"] % 4) * 4) % 16] += h["vel"] / 127
     V = P.reshape(n_bars, -1)
     energy = V.sum(axis=1)
+    dens = (P > 0).reshape(n_bars, -1).sum(axis=1).astype(float)
+    db = np.asarray(bar_db, float) if bar_db is not None and len(bar_db) == n_bars else \
+        10 * np.log10(energy + 1e-3)
     Vn = V / (np.linalg.norm(V, axis=1, keepdims=True) + 1e-9)
     crash_on_1 = P[:, PAD_INDEX["crash"], 0] > 0
-    # novelty: compare 4-bar blocks before / after each bar line
+    # novelty: compare 4-bar blocks before / after each bar line (pattern, level, density)
     nov = np.zeros(n_bars)
     for b in range(2, n_bars - 1):
         a = Vn[max(0, b - 4):b].mean(axis=0)
         c = Vn[b:min(n_bars, b + 4)].mean(axis=0)
-        e1, e2 = energy[max(0, b - 4):b].mean(), energy[b:min(n_bars, b + 4)].mean()
+        d1, d2 = db[max(0, b - 4):b].mean(), db[b:min(n_bars, b + 4)].mean()
+        n1, n2 = dens[max(0, b - 4):b].mean(), dens[b:min(n_bars, b + 4)].mean()
         nov[b] = (1 - a @ c / (np.linalg.norm(a) * np.linalg.norm(c) + 1e-9)) + \
-            0.5 * abs(e1 - e2) / (max(e1, e2) + 1e-9) + 0.25 * crash_on_1[b]
+            0.6 * min(1.0, abs(d1 - d2) / 6.0) + 0.4 * abs(n1 - n2) / (max(n1, n2) + 1e-9) + 0.25 * crash_on_1[b]
     bounds = [0]
-    thr = max(0.12, np.percentile(nov, 85))
+    thr = max(0.15, np.percentile(nov, 85))
     for b in range(4, n_bars - 3):
         if b - bounds[-1] < 4:
             continue
@@ -959,36 +1108,77 @@ def sections(hits, n_bars):
             bounds.append(b)
     bounds.append(n_bars)
     segs = [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)]
-    feats = [Vn[a:b].mean(axis=0) for a, b in segs]
-    en = [energy[a:b].mean() for a, b in segs]
-    letters, reps = [], []
-    for f in feats:
-        for li, r in enumerate(reps):
-            if f @ r / (np.linalg.norm(f) * np.linalg.norm(r) + 1e-9) > 0.9:
-                letters.append(li)
+    def letter_of(segs):
+        feats = [Vn[a:b].mean(axis=0) for a, b in segs]
+        letters, reps = [], []
+        for f in feats:
+            for li, r in enumerate(reps):
+                if f @ r / (np.linalg.norm(f) * np.linalg.norm(r) + 1e-9) > 0.9:
+                    letters.append(li)
+                    break
+            else:
+                reps.append(f)
+                letters.append(len(reps) - 1)
+        return letters
+    # merge neighbours that are the same part at the same level (no "Bridge, Bridge, Bridge")
+    merged = True
+    while merged and len(segs) > 1:
+        merged = False
+        L = letter_of(segs)
+        for i in range(len(segs) - 1):
+            (a1, b1), (a2, b2) = segs[i], segs[i + 1]
+            if L[i] == L[i + 1] and abs(db[a1:b1].mean() - db[a2:b2].mean()) < 3.0:
+                segs[i:i + 2] = [(a1, b2)]
+                merged = True
                 break
-        else:
-            reps.append(f)
-            letters.append(len(reps) - 1)
+    letters = letter_of(segs)
+    sdb = np.array([db[a:b].mean() for a, b in segs])
+    sden = np.array([dens[a:b].mean() for a, b in segs])
+    w = np.array([b - a for a, b in segs], float)
+    med_db = float(np.average(sdb, weights=w))
+    med_den = float(np.average(sden, weights=w))
     counts = np.bincount(letters)
+    labels = ["Verse"] * len(segs)
+    quiet = [(sdb[i] < med_db - 6 or sden[i] < 0.45 * med_den) for i in range(len(segs))]
+    loud = [(sdb[i] >= med_db - 1.5 and sden[i] >= 0.8 * med_den) for i in range(len(segs))]
+    for i in range(len(segs)):
+        if quiet[i]:
+            labels[i] = "Intro" if i == 0 else ("Outro" if i == len(segs) - 1 else "Breakdown")
+        elif i == 0 and len(segs) > 2 and (sdb[i] < med_db - 3 or sden[i] < 0.7 * med_den):
+            labels[i] = "Intro"
+        elif i == len(segs) - 1 and len(segs) > 2 and (sdb[i] < med_db - 3 or sden[i] < 0.7 * med_den):
+            labels[i] = "Outro"
+    # hook: the loudest / busiest part that comes back (or the part that hits after a breakdown)
+    cand = [l for l in set(letters) if counts[l] >= 2 and any(loud[i] for i in range(len(segs)) if letters[i] == l)]
+    if cand:
+        score = lambda l: np.mean([sdb[i] + 3 * sden[i] / (med_den + 1e-9) for i in range(len(segs)) if letters[i] == l])
+        hl = max(cand, key=score)
+        for i in range(len(segs)):
+            if letters[i] == hl and labels[i] == "Verse":
+                labels[i] = "Hook"
+    for i in range(1, len(segs)):
+        if labels[i - 1] in ("Breakdown", "Build") and labels[i] == "Verse" and loud[i]:
+            labels[i] = "Hook"
+    # build: a short part rising into a hook
+    for i in range(1, len(segs) - 1):
+        a, b = segs[i]
+        if labels[i + 1] == "Hook" and labels[i] in ("Verse", "Breakdown") and b - a <= 8:
+            rise = np.polyfit(np.arange(b - a), dens[a:b] + db[a:b] / 3, 1)[0] if b - a >= 2 else 0
+            if rise > 0.15 * (med_den / 8 + 1):
+                labels[i] = "Build"
+    # bridge: ONE one-off part in the middle at normal level (the longest one, later half first)
+    one_off = [i for i in range(1, len(segs) - 1)
+               if labels[i] == "Verse" and counts[letters[i]] == 1 and len(segs) > 3 and not quiet[i]]
+    if one_off:
+        i = max(one_off, key=lambda i: (segs[i][1] - segs[i][0]) + (2 if i >= len(segs) / 2 else 0))
+        labels[i] = "Bridge"
+    # neighbours with the same name are one part
     out = []
-    med = np.median(en)
-    hook_letter = None
-    rep_letters = [l for l in range(len(reps)) if counts[l] >= 2]
-    if rep_letters:
-        hook_letter = max(rep_letters, key=lambda l: np.mean([e for e, x in zip(en, letters) if x == l]))
-    for i, ((a, b), l, e) in enumerate(zip(segs, letters, en)):
-        if i == 0 and e < med * 0.85 and len(segs) > 2:
-            lab = "Intro"
-        elif i == len(segs) - 1 and e < med * 0.85 and len(segs) > 2:
-            lab = "Outro"
-        elif l == hook_letter and len(segs) > 1:
-            lab = "Hook"
-        elif counts[l] == 1 and 0 < i < len(segs) - 1 and len(segs) > 3:
-            lab = "Bridge"
+    for (a, b), l in zip(segs, labels):
+        if out and out[-1]["label"] == l:
+            out[-1]["end"] = int(b)
         else:
-            lab = "Verse"
-        out.append(dict(start=int(a), end=int(b), label=lab))
+            out.append(dict(start=int(a), end=int(b), label=l))
     # fills already in the song: last bar of a section that breaks from its own pattern
     fills = []
     toms = [PAD_INDEX[k] for k in ("tom_lo", "tom_mid", "tom_hi", "snare")]
@@ -1124,7 +1314,8 @@ def analyze(path, out_dir, bpm=None, sensitivity=0.5, progress=None):
     nb = max(1.0, (beats.max() - beats.min()) / 4) if len(beats) else 1.0
     played = [beats[H[:, k] >= 0.3 * typ[k]] for k in range(len(T))]
     pad_of = assign_pads(feats, counts, rhythm_stats(played, nb), nb)
-    grid = beat_grid(mono22, M, times, H, pad_of, bpm)
+    start = None if bpm else metric_check(times, H, pad_of, grid["bpm"])
+    grid = beat_grid(mono22, M, times, H, pad_of, bpm, bpm_start=start if start and start != grid["bpm"] else None)
     beats = to_beats(times, grid)
     say(0.75, "Writing hits")
     hits = []
@@ -1160,7 +1351,7 @@ def analyze(path, out_dir, bpm=None, sensitivity=0.5, progress=None):
         pad_of = new_pad_of
         hits.sort(key=lambda h: (h["beat"], h["pad"]))
     say(0.85, "Finding sections and fills")
-    secs, song_fills = sections(hits, n_bars)
+    secs, song_fills = sections(hits, n_bars, bar_loudness(mono22, grid["beats"], grid["period"], n_bars))
     say(0.9, "Chopping one clean hit per pad")
     pads_dir = os.path.join(out_dir, "pads")
     os.makedirs(pads_dir, exist_ok=True)

@@ -4,7 +4,7 @@
   build   --session DIR --out DIR [--feel keep|quantize] [--qgrid 1/16|1/32|1/16T|auto]
           [--style auto|trap|...|song] [--layers hats,ghost,shaker,perc,openhat] [--grid 1/16|1/32|1/16T|1/32T|1/8T]
           [--swing 0..1] [--human 0..1] [--fills every8,every16,prehook,sections] [--fill-len 1|2|4|8]
-          [--intensity 0..1] [--crash 0|1] [--room 0|1] [--seed N]
+          [--intensity 0..1] [--crash 0|1] [--room 0|1] [--seed N] [--tempo-map auto|on|off]
   factory --out DIR          write the 16 factory pad sounds
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ import sys
 import time
 import traceback
 
-from .common import NAMES, PADS, progress_writer, save_json, load_json, write_midi
+from .common import NAMES, PADS, progress_writer, save_json, load_json, tempo_map, write_midi
 
 
 def cmd_analyze(a):
@@ -57,19 +57,25 @@ def cmd_build(a):
         "all": os.path.join(a.out, f"{stem}_TITO_all_{a.seed}.mid"),
     }
     bpm = an["bpm"]
-    write_midi(files["song"], [("Song", r["song"])], bpm)
+    # drifting (live) song + keep timing: the MIDI carries the song's own tempo changes
+    use_map = a.tempo_map == "on" or (a.tempo_map == "auto" and not an.get("steady", True) and a.feel == "keep")
+    tm = tempo_map(an.get("beats", [])) if use_map else []
+    tm = tm if len(tm) > 1 else None
+    write_midi(files["song"], [("Song", r["song"])], bpm, tempos=tm)
     if r["layers"]:
-        write_midi(files["layers"], [("Groove layers", r["layers"])], bpm)
+        write_midi(files["layers"], [("Groove layers", r["layers"])], bpm, tempos=tm)
     else:
         files.pop("layers")
     if r["fills"]:
-        write_midi(files["fills"], [("Fills", r["fills"])], bpm)
+        write_midi(files["fills"], [("Fills", r["fills"])], bpm, tempos=tm)
     else:
         files.pop("fills")
-    write_midi(files["all"], [("Song", r["song"]), ("Groove layers", r["layers"]), ("Fills", r["fills"])], bpm)
+    write_midi(files["all"], [("Song", r["song"]), ("Groove layers", r["layers"]), ("Fills", r["fills"])], bpm,
+               tempos=tm)
     end = max([n["beat"] for n in r["song"] + r["layers"] + r["fills"]], default=4.0)
     length = 4.0 * (int(end // 4) + 1)
     res = dict(ok=True, bpm=bpm, style=r["style"], files=files, length_beats=length, t0=an["t0"],
+               steady=bool(an.get("steady", True)), tempo_map=bool(tm),
                sections=an["sections"], windows=r["windows"],
                notes=dict(song=_compact(r["song"]), layers=_compact(r["layers"]), fills=_compact(r["fills"])))
     save_json(os.path.join(a.session, "build.json"), res)
@@ -108,6 +114,7 @@ def main(argv=None):
     s.add_argument("--crash", type=int, default=1)
     s.add_argument("--room", type=int, default=1)
     s.add_argument("--seed", type=int, default=1)
+    s.add_argument("--tempo-map", default="auto", choices=["auto", "on", "off"])
     s = sub.add_parser("factory")
     s.add_argument("--out", required=True)
     a = p.parse_args(argv)

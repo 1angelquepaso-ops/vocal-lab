@@ -39,13 +39,36 @@ def note_of(key: str) -> int:
     return BASE_NOTE + PAD_INDEX[key]
 
 
-def write_midi(path, tracks, bpm, ppq=480):
-    """tracks = [(name, [ {beat, pad(index), vel, len(beats)} ])]; drum notes on channel 10."""
+def tempo_map(beat_times, every=1, min_change=0.02):
+    """Beat map (seconds of every beat from bar 1) -> [(beat, bpm)] once per bar, smoothed,
+    only where the tempo really moves. Lets a drifting live track's MIDI play back in time
+    with the original recording (FL: File > Import keeps it; drag-and-drop uses the project tempo)."""
+    bt = np.asarray(beat_times, float)
+    if len(bt) < 8:
+        return []
+    bpm = 60.0 / np.diff(bt)            # beat map is already smoothed by the engine: exact round trip
+    out, last = [], None
+    for b in range(0, len(bpm), every):
+        v = float(np.mean(bpm[b:b + every]))
+        if last is None or abs(v - last) >= min_change:
+            out.append((b, round(v, 3)))
+            last = v
+    return out
+
+
+def write_midi(path, tracks, bpm, ppq=480, tempos=None):
+    """tracks = [(name, [ {beat, pad(index), vel, len(beats)} ])]; drum notes on channel 10.
+    tempos = optional [(beat, bpm)] tempo map (first entry replaces the single tempo)."""
     import mido
     mid = mido.MidiFile(ticks_per_beat=ppq, type=1)
     meta = mido.MidiTrack()
-    meta.append(mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(bpm), time=0))
+    tempos = tempos or [(0, bpm)]
     meta.append(mido.MetaMessage("time_signature", numerator=4, denominator=4, time=0))
+    last = 0
+    for b, v in tempos:
+        t = int(round(b * ppq))
+        meta.append(mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(v), time=t - last))
+        last = t
     mid.tracks.append(meta)
     for name, notes in tracks:
         tr = mido.MidiTrack()
