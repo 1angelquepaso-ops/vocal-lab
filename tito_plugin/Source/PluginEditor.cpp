@@ -912,8 +912,9 @@ void TitoEditor::shufflePad (int i)
 void TitoEditor::chooseSoundFolder()
 {
     chooser = std::make_unique<juce::FileChooser> ("Your drum sounds folder", proc.soundFolder);
+    juce::Component::SafePointer<TitoEditor> safeEd (this);        // made out here: MSVC + nested lambdas
     chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
-                          [this] (const juce::FileChooser& fc)
+                          [this, safeEd] (const juce::FileChooser& fc)
                           {
                               const auto d = fc.getResult();
                               if (! d.isDirectory()) return;
@@ -922,7 +923,7 @@ void TitoEditor::chooseSoundFolder()
                               cfg.getParentDirectory().createDirectory();
                               cfg.replaceWithText (d.getFullPathName());
                               proc.status = "Reading your sound folder (first time only)...";
-                              library.scan (d, [safe = juce::Component::SafePointer<TitoEditor> (this)]
+                              library.scan (d, [safe = safeEd]
                               {
                                   if (safe == nullptr) return;
                                   safe->proc.status = "Sound folder ready: " + juce::String (safe->library.count()) + " drum sounds sorted by type.";
