@@ -1,0 +1,36 @@
+name: TITO PUENTE dataset (one-time fetch)
+
+# Downloads Google Magenta's Groove MIDI Dataset (MIDI only, 3.1 MB, CC BY 4.0):
+# 13.6 h of real drummers on a Roland TD-11, labelled by style and beat/fill.
+# TITO PUENTE learns its fills, groove layers and drummer swing from it.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download + verify
+        run: |
+          curl -L -o gmd.zip https://storage.googleapis.com/magentadata/datasets/groove/groove-v1.0.0-midionly.zip
+          echo "651cbc524ffb891be1a3e46d89dc82a1cecb09a57c748c7b45b844c4841dcc1e  gmd.zip" | sha256sum -c -
+          mkdir -p tito/data
+          mv gmd.zip tito/data/groove-v1.0.0-midionly.zip
+          cat > tito/data/GROOVE_LICENSE.txt <<'TXT'
+          Groove MIDI Dataset v1.0.0 (MIDI only) by Google LLC / Magenta.
+          Jon Gillick, Adam Roberts, Jesse Engel, Douglas Eck, David Bamman,
+          "Learning to Groove with Inverse Sequence Transformations", ICML 2019.
+          License: Creative Commons Attribution 4.0 International (CC BY 4.0).
+          https://magenta.tensorflow.org/datasets/groove
+          TXT
+      - name: Commit
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add tito/data
+          git commit -m "TITO PUENTE: add Groove MIDI Dataset (CC BY 4.0)" || exit 0
+          git push
