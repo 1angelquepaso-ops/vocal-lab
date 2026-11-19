@@ -72,8 +72,10 @@ def render_stem(path, P, dst, tmp, vocal=False):
         y = np.concatenate([np.zeros((P['pad'], y.shape[1]), np.float32), y])
     if P['skip']:
         y = y[P['skip']:]
-    a = os.path.join(tmp, os.path.basename(dst) + '.in.wav')
-    b = os.path.join(tmp, os.path.basename(dst) + '.out.wav')
+    # plain-ASCII temp names: the Windows Rubber Band exe can't open paths with "→" / "ñ" / "Ó"
+    tag = f'stem{abs(hash(dst)) % 10 ** 8:08d}'
+    a = os.path.join(tmp, tag + '.in.wav')
+    b = os.path.join(tmp, tag + '.out.wav')
     sf.write(a, y, sr, subtype='FLOAT')
     if abs(P['ratio'] - 1) < 1e-9 and not P['transpose']:
         shutil.copy(a, b)
@@ -85,8 +87,10 @@ def render_stem(path, P, dst, tmp, vocal=False):
             if vocal:
                 cmd += ['--formant']
         cmd += [a, b]
-        subprocess.run(cmd, check=True, capture_output=True,
-                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        p = subprocess.run(cmd, capture_output=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        if p.returncode != 0:
+            raise RuntimeError('Rubber Band failed on ' + os.path.basename(path) + ': '
+                               + (p.stderr or p.stdout or b'').decode('utf-8', 'replace')[-300:])
     z, _ = sf.read(b, always_2d=True, dtype='float32')
     if sr != P['out_sr']:
         z = soxr.resample(z, sr, P['out_sr'], quality='VHQ').astype(np.float32)
