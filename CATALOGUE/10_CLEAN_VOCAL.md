@@ -2,7 +2,7 @@
 
 **What:** AI vocal cleaner. Removes hiss, hum, fan and room noise and leaves the voice alone. Live insert in FL.
 **Repo:** `1angelquepaso-ops/clean-vocal-vst` (Rust: nih-plug + DeepFilterNet3 + nnnoiseless/RNNoise). VST3 + CLAP.
-**Version:** v3 (Nov 19 2026) — built and pushed; replaces v2 once installed from the repo Releases page.
+**Version:** v3 (Nov 19 2026) — installed; Angel confirmed it works great.
 
 ## Modes
 | Mode | Engine | Delay (44.1k) | For |

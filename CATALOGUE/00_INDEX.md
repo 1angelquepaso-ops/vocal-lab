@@ -8,7 +8,7 @@ the data behind it, what we tested, and where each one goes next. Use it to rebu
 
 | # | Plugin | What it does | Status | Code (GitHub) | Download (release tag) |
 |---|---|---|---|---|---|
-| 1 | **Clean Vocal** | AI noise / hum / room cleaner for vocals (DeepFilterNet3 + RNNoise LIVE mode), live insert | v3 built Nov 19 (v2 installed) | `1angelquepaso-ops/clean-vocal-vst` | repo Releases |
+| 1 | **Clean Vocal** | AI noise / hum / room cleaner for vocals (DeepFilterNet3 + RNNoise LIVE mode), live insert | v3 installed (Nov 19, confirmed working) | `1angelquepaso-ops/clean-vocal-vst` | repo Releases |
 | 2 | **vocal-lab Harmonizer** | Theory-based harmony generator: load a dry vocal chunk (+ optional beat for analysis), generate harmonies one at a time, drag stems into FL | v2 installed | `1angelquepaso-ops/vocal-lab` (`vocal_lab/`, `plugin/`) | `latest` |
 | 3 | **PIRATA** | Chord + MIDI extractor for samples, Simple (melody line) / As-played / Rich (melody + lush chords), melody layer (complement, counter, amplify, random, arp), grand-piano preview, drag MIDI | v2.1 built (Nov 13 2026: timing pass from TITO) | `vocal-lab` (`pirata/`, `pirata_plugin/`) | `pirata-latest` |
 | 4 | **MIRRORWALL** | Vocal chain emulator: 8 stock chains fitted from our own old vocals + EMULATOR (reference acapella → new preset), autotune with key/scale, tweak knobs, mic match | v1 (offline) installed | `vocal-lab` (`mirrorwall/`, `mirrorwall_plugin/`) | `mirrorwall-latest` |
