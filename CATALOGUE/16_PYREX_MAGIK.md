@@ -54,9 +54,39 @@ Findings
 - All stem sets: identical lengths, 48 kHz / 16-bit.
 - Suno IS whole-number BPM: TITO's integer snap (< 0.05 BPM) was checked and is right here.
 
+## Step 2: Global-lock render + after-checks (Nov 18 2026)
+`pyrex-engine render --analysis result.json --bpm 120 --sr 44100 --out-dir DIR --out render.json`
+Pad to the bar line before 0 s → Rubber Band R3 time-only (`-3 -t ratio`) per stem (2 at a time) → one soxr VHQ
+resample to the FL rate → exact equal length → **stretcher-delay compensation** → checks.
+
+Test: La Misma Condena, 9 stems, 116 → 120 BPM (5:22 song), 3 min 22 s on 2 cores (analysis 14 s).
+| Check | Result |
+|---|---|
+| Length | 9 / 9 identical (13,743,882 samples) |
+| Drums re-measured from scratch | 120.000 BPM |
+| Backbone hits vs FL grid | offset −0.03 ms, median 1.8 ms, drift 4.7 ms, feel 1.1 ms, 97 % within 10 ms → green |
+| Bar 1 | on an FL bar line (half-time read) |
+| Pitch | keys unchanged on all 6 harmonic/vocal stems, tuning within ±1 c (bass ±1 c) |
+| Stems vs each other | offsets spread 0.69 ms (< 1 ms) |
+
+Lessons
+- **Don't re-detect pads to check timing.** TITO renames sounds on every run (kick ↔ rim), so a fresh analysis
+  measures different hits → ±4 ms noise. The checker maps the SAME source kicks/snares through the time map and
+  finds each real transient on the output waveform (TITO `refine_times`).
+- Checker noise floor (no stretch): median 0.01 ms, p95 6.3 ms = the refine picking a neighbour attack in dense
+  hits, not stretch error.
+- Rubber Band R3 delays transients by a constant **+1.46 ms** (spread +~1 ms over the floor) → measured per render
+  on the drums and every stem shifted by the same samples (65 @ 44.1 kHz). Grid offset +1.37 → −0.03 ms.
+- Phase bias: hits sat 2 ms early vs TITO's fitted grid → grid shifted by the backbone hits' median offset.
+- Drift flags need ≥ 8 backbone hits in the 12 s window (a sparse break flagged 10.7 ms that wasn't real).
+- Engines on the drums (stretcher error median / p95): R3 1.46 / 7.8 ms (32 s), R3 `--window-short` 2.46 / 8.6,
+  **R2 `-c 6` 1.39 / 6.7 ms (7 s, 4× faster)**, R2 percussive 4.2 / 9.3. Bake-off (step 5) must include ears on vocals.
+- Delivery from Claude's workspace is capped (~30–55 MB worked) → test sets go out as 24-bit FLAC (−138 dB vs
+  the float WAV). The plugin itself writes 32-bit float WAV locally.
+
 ## Limits / next
 - Drift spans on Ódiame / Orange / mansn: grid snap should follow them; check in the render step (step 2–3).
 - Bar 1 still asks on 3 of 5 songs; a bass-note / chord-change vote is the next check.
 - Key: major/minor margin on Ódiame 0.08 (asks).
-- Build order: 1 analysis ✅ → 2 global render + checks → 3 grid snap + markers → 4 JUCE window + drag-out →
+- Build order: 1 analysis ✅ → 2 global render + checks ✅ → 3 grid snap + markers → 4 JUCE window + drag-out →
   5 engine bake-off → 6 CI tests + release `pyrex-latest`.

@@ -117,7 +117,7 @@ def grid_confidence(hits, beats, win_s=12.0):
     hs = [h for h in hits if h['key'] in CLOCK_PADS]
     if len(hs) < 16:
         hs = list(hits)
-    empty = dict(on_grid_10ms=0.0, median_ms=999.0, drift_ms=999.0, feel_ms=999.0, n=len(hs), bad=[])
+    empty = dict(on_grid_10ms=0.0, median_ms=999.0, drift_ms=999.0, feel_ms=999.0, offset_ms=0.0, n=len(hs), bad=[])
     if len(hs) < 16 or len(beats) < 8:
         return empty
     t = np.array([h['t'] for h in hs])
@@ -134,8 +134,9 @@ def grid_confidence(hits, beats, win_s=12.0):
     slow = np.array([np.median(r[np.abs(t - x) <= win_s / 2]) for x in t])
     feel = np.abs(r - slow)
     bad, cur = [], None
-    for x, d in zip(t, slow):
-        if abs(d) > 10:
+    dense = np.array([np.sum(np.abs(t - x) <= win_s / 2) for x in t]) >= 8
+    for x, d, ok in zip(t, slow, dense):
+        if ok and abs(d) > 10:
             if cur and x - cur[1] < win_s:
                 cur[1], cur[2] = x, max(cur[2], abs(d))
             else:
@@ -145,7 +146,8 @@ def grid_confidence(hits, beats, win_s=12.0):
            for a, b, d in bad]
     return dict(on_grid_10ms=round(float(np.mean(np.abs(r) < 10)) * 100, 1),
                 median_ms=round(float(np.median(np.abs(r))), 2),
-                drift_ms=round(float(np.max(np.abs(slow))), 1), feel_ms=round(float(np.median(feel)), 1),
+                drift_ms=round(float(np.max(np.abs(slow[dense]))) if dense.any() else 999.0, 1),
+                feel_ms=round(float(np.median(feel)), 1), offset_ms=round(float(np.median(r)), 2),
                 n=int(len(t)), bad=bad)
 
 
@@ -380,6 +382,10 @@ def analyze_song(paths, label=None, bpm_override=None, progress=None):
     dbs = [i for i in range(len(beats)) if i % 4 == ph]
     i1 = max([i for i in dbs if beats[i] <= first_hit + 0.05], default=dbs[0])
     music_bar1 = float(beats[i1])
+    # bar lines = where the backbone hits actually land (removes a constant onset/phase bias)
+    shift = conf.get('offset_ms', 0.0) / 1000 if abs(conf.get('offset_ms', 0.0)) < 15 else 0.0
+    beats = beats + shift
+    music_bar1 = float(beats[i1])
     grid, head = extend_grid(beats[i1 % 4:], dur)          # keep the bar phase: start on a downbeat
     # file start = the bar line at or before 0 s (silence pads it when it is negative)
     pre = int(np.ceil(head / 4) * 4)
@@ -411,7 +417,7 @@ def analyze_song(paths, label=None, bpm_override=None, progress=None):
                            steady=clock['steady'], mode=mode, level=level, conf=clock['conf'],
                            music_bar1_s=round(music_bar1, 4), music_bar1_is_bar=bar_of_music1,
                 file_start_s=round(start_s, 4), pad_silence_s=round(max(0.0, -start_s), 4),
-                downbeat_style=style, downbeat_conf=dconf, period=period,
+                downbeat_style=style, downbeat_conf=dconf, phase_shift_ms=round(shift * 1000, 2), period=period,
                            local_bpm_min=round(min(tempos), 2), local_bpm_max=round(max(tempos), 2),
                            beats=[round(float(b), 5) for b in grid], tried=tried),
                 key=key, questions=questions, notes=notes)
