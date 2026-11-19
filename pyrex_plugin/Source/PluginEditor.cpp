@@ -76,19 +76,45 @@ namespace
 }
 
 //==============================================================================
+void EngineJob::cancel()
+{
+    cancelled = true;
+    {
+        const juce::ScopedLock sl (lock);
+        if (running != nullptr) running->kill();
+    }
+#if JUCE_WINDOWS
+    juce::ChildProcess k;                // Rubber Band runs as helper processes: end those too
+    k.start ("taskkill /F /T /IM rubberband.exe");
+#endif
+}
+
 void EngineJob::run()
 {
     juce::ChildProcess p;
     juce::var result;
-    if (! p.start (args, juce::ChildProcess::wantStdOut))
+    if (cancelled)
+        result = makeError ("__stopped__");
+    else if (! p.start (args, juce::ChildProcess::wantStdOut))
         result = makeError ("Couldn't start the engine:\n" + args[0]);
     else
     {
+        {
+            const juce::ScopedLock sl (lock);
+            running = &p;
+        }
+        if (cancelled) p.kill();
         const auto out = p.readAllProcessOutput().trim();
+        {
+            const juce::ScopedLock sl (lock);
+            running = nullptr;
+        }
         auto lines = juce::StringArray::fromLines (out);
         lines.removeEmptyStrings();
         result = lines.isEmpty() ? juce::var() : juce::JSON::parse (lines[lines.size() - 1]);
-        if (! result.isObject())
+        if (cancelled)
+            result = makeError ("__stopped__");
+        else if (! result.isObject())
             result = makeError ("The engine didn't answer properly:\n" + out.substring (0, 400));
     }
     juce::MessageManager::callAsync ([cb = callback, result] { cb (result); });
@@ -177,6 +203,9 @@ PyrexEditor::PyrexEditor (PyrexProcessor& p) : AudioProcessorEditor (&p), proc (
     targetBox.setTextToShowWhenEmpty ("auto", dim);
     styleButton (flBtn, false);
     addAndMakeVisible (flBtn);
+    styleButton (stopBtn, false);
+    stopBtn.setColour (juce::TextButton::buttonColourId, red.darker (0.45f));
+    addAndMakeVisible (stopBtn);
     styleButton (clearBtn, false);
     addAndMakeVisible (clearBtn);
     addAndMakeVisible (stemList);
@@ -269,7 +298,8 @@ PyrexEditor::PyrexEditor (PyrexProcessor& p) : AudioProcessorEditor (&p), proc (
         proc.transpose = shiftFor (originalKey(), toKeyBox.getText());
         settingsChanged();
     };
-    renderBtn.onClick = [this] { renderNow(); };
+    renderBtn.onClick = [this] { startNow(); };
+    stopBtn.onClick = [this] { stopNow(); };
     openBtn.onClick = [this]
     {
         auto d = outputDir();
@@ -366,6 +396,7 @@ void PyrexEditor::runEngine (juce::StringArray args, std::function<void (juce::v
     args.insert (0, exe.getFullPathName());
     busy = true;
     progress = 0.0;
+    busySince = juce::Time::currentTimeMillis();
     refresh();
     juce::Component::SafePointer<PyrexEditor> safe (this);
     job = std::make_unique<EngineJob> (args, [safe, onOk] (juce::var r)
@@ -373,7 +404,18 @@ void PyrexEditor::runEngine (juce::StringArray args, std::function<void (juce::v
         if (safe == nullptr) return;
         safe->busy = false;
         safe->progress = 0.0;
+        const bool wasRender = safe->rendering;
+        safe->rendering = false;
         if (r["ok"]) onOk (r);
+        else if (r["error"].toString() == "__stopped__")
+        {
+            if (wasRender)                   // a half-written set must not look like a finished one
+            {
+                for (auto& f : safe->outputDir().findChildFiles (juce::File::findFiles, false, "*.wav")) f.deleteFile();
+                safe->proc.render = juce::var();
+            }
+            safe->proc.status = "Stopped. Nothing was kept from that run.";
+        }
         else safe->proc.status = "Problem: " + r["error"].toString();
         safe->refresh();
     });
@@ -425,7 +467,12 @@ void PyrexEditor::setStems (const juce::StringArray& files)
         proc.transpose = 0;
         proc.targetBpm = 0;
     }
-    if (added > 0) { proc.render = juce::var(); dirty = true; dirtyTicks = 4; proc.status = "Stems added, reading them again..."; }
+    if (added > 0)                       // loading only fills the list: nothing runs until RENDER is pressed
+    {
+        proc.analysis = juce::var();
+        proc.render = juce::var();
+        proc.status = juce::String (proc.stems.size()) + " stems loaded. Press RENDER to start.";
+    }
     if (refused > 0)
         proc.status = "12 stems max: " + juce::String (refused) + " not added. Take one out with its x first.";
     refresh();
@@ -437,9 +484,8 @@ void PyrexEditor::removeStem (int index)
     proc.stems.remove (index);
     proc.render = juce::var();
     if (proc.stems.isEmpty()) { clearStems(); return; }
-    dirty = true;
-    dirtyTicks = 4;
-    proc.status = "Stem removed, reading the rest...";
+    proc.analysis = juce::var();
+    proc.status = juce::String (proc.stems.size()) + " stems loaded. Press RENDER to start.";
     refresh();
 }
 
@@ -453,12 +499,11 @@ void PyrexEditor::clearStems()
     proc.keyName = {};
     proc.transpose = 0;
     proc.targetBpm = 0;
-    dirty = false;
     proc.status = "Drop a Suno stems folder or its WAVs onto this window.";
     refresh();
 }
 
-void PyrexEditor::analyze()
+void PyrexEditor::analyze (bool thenRender)
 {
     if (busy || proc.stems.isEmpty()) return;
     proc.sessionDir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("PYREX MAGIK")
@@ -470,9 +515,9 @@ void PyrexEditor::analyze()
     if (proc.bpmOverride >= 40 && proc.bpmOverride <= 300)
         args.addArray ({ "--bpm", juce::String (proc.bpmOverride, 3) });
     proc.status = "Reading the clock and the key...";
-    runEngine (args, [this] (juce::var)
+    juce::Component::SafePointer<PyrexEditor> safe (this);
+    runEngine (args, [this, safe, thenRender] (juce::var)
     {
-        if (dirty) return;               // the list changed while reading: the timer reads it again
         proc.analysis = juce::JSON::parse (proc.sessionDir.getChildFile ("analysis.json"));
         if (! proc.analysis.isObject() || ! proc.analysis["ok"])
         {
@@ -483,7 +528,14 @@ void PyrexEditor::analyze()
         proc.keyName = proc.analysis["key"]["key"].toString();
         if (proc.bpmOverride > 0) proc.targetBpm = 0;   // song BPM changed by hand: re-derive the target
         auto* q = proc.analysis["questions"].getArray();
-        proc.status = (q != nullptr && ! q->isEmpty()) ? "Check the questions below, then RENDER." : "Ready: press RENDER.";
+        const bool estimated = (bool) proc.analysis["clock"]["approx"];       // no drums: the BPM is a guess, let her check it
+        const bool asks = estimated || (q != nullptr && ! q->isEmpty());
+        proc.status = estimated ? "No drums found: check the estimated BPM (type it + Set if off), then press RENDER."
+                    : asks ? "Check the questions below, then press RENDER." : "Read the song. Rendering next...";
+        if (thenRender && ! asks)
+            juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->renderNow(); });
+        else if (! asks)
+            proc.status = "Ready: press RENDER.";
     });
 }
 
@@ -495,6 +547,21 @@ void PyrexEditor::settingsChanged()
         proc.status = "Settings changed: RENDER again.";
     }
     refresh();
+}
+
+void PyrexEditor::stopNow()
+{
+    if (! busy || job == nullptr) return;
+    proc.status = "Stopping...";
+    refresh();
+    job->cancel();
+}
+
+void PyrexEditor::startNow()
+{
+    if (busy || proc.stems.isEmpty()) return;
+    if (proc.analysis.isObject()) { renderNow(); return; }
+    analyze (true);                      // fresh list: read the song first, then render
 }
 
 void PyrexEditor::renderNow()
@@ -514,6 +581,7 @@ void PyrexEditor::renderNow()
     if (proc.keyTranspose && proc.transpose != 0) args.addArray ({ "--transpose", juce::String (proc.transpose) });
     if (proc.nudge != 0) args.addArray ({ "--nudge", juce::String (proc.nudge, 3) });
     proc.status = "Rendering " + juce::String (proc.stems.size()) + " stems...";
+    rendering = true;
     runEngine (args, [this] (juce::var)
     {
         proc.render = juce::JSON::parse (proc.sessionDir.getChildFile ("render.json"));
@@ -557,9 +625,16 @@ void PyrexEditor::refresh()
                         juce::dontSendNotification);
     stemList.set (proc.stems, ! busy);
     clearBtn.setEnabled (! proc.stems.isEmpty() && ! busy);
-    for (auto* c : std::initializer_list<juce::Component*> { &half, &dbl, &setBpm, &songBpmBox, &flBtn, &nudgeL, &nudgeR, &keyBox,
-                                                             &renderBtn })
+    for (auto* c : std::initializer_list<juce::Component*> { &half, &dbl, &setBpm, &songBpmBox, &flBtn, &nudgeL, &nudgeR, &keyBox })
         c->setEnabled (has && ! busy);
+    renderBtn.setEnabled (! proc.stems.isEmpty() && ! busy);
+    renderBtn.setButtonText (busy ? "WORKING..." : "RENDER");
+    stopBtn.setEnabled (busy);
+    {
+        const bool bad = proc.status.startsWith ("Problem") || proc.status.startsWith ("12 stems");
+        statusLabel.setColour (juce::Label::textColourId, bad ? red : busy ? text : proc.status.startsWith ("Locked") ? green : text);
+        statusLabel.setFont (juce::FontOptions (bad || busy ? 14.0f : 12.5f, bad || busy ? juce::Font::bold : juce::Font::plain));
+    }
     loadBtn.setEnabled (! busy);
     toKeyBox.setEnabled (has && ! busy && proc.keyTranspose);
     nudgeL.setButtonText (nudgeStep() < 1.0 ? "-1/2 beat" : "-1 beat");
@@ -671,12 +746,6 @@ void PyrexEditor::refresh()
 
 void PyrexEditor::timerCallback()
 {
-    if (dirty && ! busy && --dirtyTicks <= 0)
-    {
-        dirty = false;
-        analyze();
-    }
-
     static double lastHost = -1;
     if (busy && proc.sessionDir.isDirectory())
     {
@@ -684,9 +753,13 @@ void PyrexEditor::timerCallback()
         if (t.contains ("|"))
         {
             progress = t.upToFirstOccurrenceOf ("|", false, false).getDoubleValue();
-            progressText = t.fromFirstOccurrenceOf ("|", false, false);
-            statusLabel.setText (progressText, juce::dontSendNotification);
+            progressText = t.fromFirstOccurrenceOf ("|", false, false).trim();
         }
+        if (progressText.isEmpty()) progressText = "Starting the engine";
+        const int secs = (int) ((juce::Time::currentTimeMillis() - busySince) / 1000);
+        statusLabel.setText ("WORKING  " + juce::String (secs / 60) + ":" + juce::String (secs % 60).paddedLeft ('0', 2)
+                                 + "   -   " + progressText + "  (" + juce::String ((int) std::round (progress * 100.0)) + "%)",
+                             juce::dontSendNotification);
     }
     const double h = proc.hostBpm.load();
     if (h != lastHost)
@@ -819,12 +892,16 @@ void PyrexEditor::resized()
     toKeyBox.setBounds (row.removeFromLeft (80));
     shiftLabel.setBounds (R.removeFromTop (22));
     R.removeFromTop (10);
-    renderBtn.setBounds (R.removeFromTop (40));
+    auto rr = R.removeFromTop (40);
+    stopBtn.setBounds (rr.removeFromRight (96));
+    rr.removeFromRight (8);
+    renderBtn.setBounds (rr);
     R.removeFromTop (8);
     progressBar.setBounds (R.removeFromTop (18));
-    R.removeFromTop (8);
+    R.removeFromTop (6);
+    statusLabel.setBounds (R.removeFromTop (40));          // the one line that says what is happening
+    R.removeFromTop (6);
     renderBadge.setBounds (R.removeFromTop (48));
-    statusLabel.setBounds (R.removeFromTop (34));
 
     b.removeFromTop (10);
     auto out = b.reduced (12, 10);

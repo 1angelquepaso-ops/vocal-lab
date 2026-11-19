@@ -9,12 +9,16 @@ class EngineJob : public juce::Thread
 public:
     EngineJob (juce::StringArray a, std::function<void (juce::var)> done)
         : juce::Thread ("pyrex engine"), args (std::move (a)), callback (std::move (done)) {}
-    ~EngineJob() override { stopThread (600000); }
+    ~EngineJob() override { cancel(); stopThread (5000); }      // closing the window must never wait for a render
     void run() override;
+    void cancel();                       // STOP: kills the engine (and its Rubber Band helpers) at once
 
 private:
     juce::StringArray args;
     std::function<void (juce::var)> callback;
+    std::atomic<bool> cancelled { false };
+    juce::CriticalSection lock;
+    juce::ChildProcess* running = nullptr;
 };
 
 // One labelled grip that drags ONE already-saved WAV into FL (playbook: never drag many at once).
@@ -91,12 +95,13 @@ private:
     PyrexProcessor& proc;
 
     juce::TextButton loadBtn { "Load stems..." }, half { juce::CharPointer_UTF8 ("\xc3\xb7" "2") }, dbl { juce::CharPointer_UTF8 ("\xc3\x97" "2") },
-                     setBpm { "Set" }, clearBtn { "Clear" }, flBtn { "= FL" }, nudgeL { "-1 beat" }, nudgeR { "+1 beat" },
+                     setBpm { "Set" }, clearBtn { "Clear" }, stopBtn { "STOP" }, flBtn { "= FL" }, nudgeL { "-1 beat" }, nudgeR { "+1 beat" },
                      lockBtn { "BPM LOCK" }, keyBtn { "KEY TRANSPOSE" }, renderBtn { "RENDER" }, openBtn { "Open folder" };
     juce::TextEditor songBpmBox, targetBox;
     StemList stemList;
-    bool dirty = false;
-    int dirtyTicks = 0;
+    bool rendering = false;
+    bool renderAfterAnalyze = false;     // RENDER pressed on a fresh list: read the clock, then go straight on
+    juce::int64 busySince = 0;
     juce::ComboBox keyBox, toKeyBox;
     juce::Label title, stemsLabel, bpmLabel, keyLabel, bar1Label, hostLabel, shiftLabel, statusLabel, notesLabel, flagsLabel,
                 hSong, hLock, hOut;
@@ -115,7 +120,9 @@ private:
     void setStems (const juce::StringArray& files);       // ADDS to the list (12 max), never replaces it
     void removeStem (int index);
     void clearStems();
-    void analyze();
+    void analyze (bool thenRender = false);
+    void startNow();
+    void stopNow();
     void renderNow();
     void settingsChanged();
     double targetBpmNow() const;

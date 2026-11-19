@@ -75,14 +75,16 @@ def precheck(paths):
         i = sf.info(p)
         info.append(dict(path=p, name=stem_name(p), sr=i.samplerate, frames=i.frames, ch=i.channels,
                          subtype=i.subtype))
-    srs = {x['sr'] for x in info}
-    lens = {x['frames'] for x in info}
-    if len(srs) > 1:
-        problems.append('Stems have different sample rates: ' + ', '.join(f"{x['name']} {x['sr']}" for x in info))
-    if len(lens) > 1:
-        ref = max(lens, key=lambda L: sum(1 for x in info if x['frames'] == L))
-        odd = [x['name'] for x in info if x['frames'] != ref]
-        problems.append('These stems are a different length from the rest: ' + ', '.join(odd))
+    # Different sample rates are fine (an export from FL at 44.1 kHz next to Suno's 48 kHz stems): what
+    # matters is that every stem is the same LENGTH IN SECONDS (within 20 ms). Each stem is resampled to
+    # the song's rate (the most common one) when it is rendered.
+    durs = [x['frames'] / x['sr'] for x in info]
+    ref = float(np.median(durs))
+    odd = [x['name'] for x, d in zip(info, durs) if abs(d - ref) > 0.02]
+    if odd:
+        problems.append('These stems are a different length from the rest (not the same song or export?): '
+                        + ', '.join(f"{n} ({d:.1f}s vs {ref:.1f}s)" for n, d in
+                                    ((x['name'], x['frames'] / x['sr']) for x in info if x['name'] in odd)))
     return info, problems
 
 
@@ -390,8 +392,12 @@ def analyze_song(paths, label=None, bpm_override=None, progress=None):
         return dict(ok=False, error=' / '.join(problems), stems=info)
     for x in info:
         x['role'] = role_of(x['name'])
-    sr = info[0]['sr']
-    dur = info[0]['frames'] / sr
+    rates = [x['sr'] for x in info]
+    sr = max(set(rates), key=lambda r: (rates.count(r), r))          # the song's rate: most common, higher on a tie
+    dur = float(np.median([x['frames'] / x['sr'] for x in info]))
+    n_frames = int(round(dur * sr))
+    if len(set(rates)) > 1:
+        odd_sr = ', '.join(f"{x['name']} {x['sr']} Hz" for x in info if x['sr'] != sr)
     say(0.08, 'Loading stems')
     mono = {}
     for x in info:
@@ -515,13 +521,15 @@ def analyze_song(paths, label=None, bpm_override=None, progress=None):
         questions.append(key['question'])
     if key.get('key_change'):
         notes.append('The key seems to change in parts of the song: check before transposing.')
+    if len(set(rates)) > 1:
+        notes.append(f'Mixed sample rates: {odd_sr} resampled to {sr} Hz.')
     quiet = [x['name'] for x in info if x['empty']]
     if quiet:
         notes.append('Silent stems (still rendered): ' + ', '.join(quiet))
     mode = 'global' if clock['steady'] else 'grid'
     level = clock['level']
     say(0.98, 'Done')
-    return dict(ok=True, title=None, duration=round(dur, 3), sr=sr,
+    return dict(ok=True, title=None, duration=round(dur, 3), sr=sr, frames=n_frames,
                 stems=[{k: v for k, v in x.items() if k != 'path'} | dict(path=x['path']) for x in info],
                 clock=dict(source=src, measured_bpm=round(measured, 3), bpm=round(bpm, 3),
                            display_bpm=int(round(bpm)), label_bpm=label, label_check=tag,

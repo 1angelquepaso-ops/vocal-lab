@@ -76,6 +76,10 @@ def make(folder):
     sf.write(os.path.join(folder, '0 Lead Vocals.wav'), np.stack([voc, voc], 1), SR, subtype='PCM_16')
     sf.write(os.path.join(folder, '2 Drums.wav'), np.stack([drums, drums], 1) * 0.8, SR, subtype='PCM_16')
     sf.write(os.path.join(folder, '5 Keyboard.wav'), np.stack([keys, keys], 1), SR, subtype='PCM_16')
+    # one stem exported at 44.1 kHz / 32-bit float next to the 48 kHz ones (an FL export beside Suno stems)
+    import soxr
+    g = soxr.resample(keys, SR, 44100).astype(np.float32)
+    sf.write(os.path.join(folder, '4 Guitar.wav'), np.stack([g, g], 1), 44100, subtype='FLOAT')
     sf.write(os.path.join(folder, '8 Other.wav'), np.zeros((n, 2)), SR, subtype='PCM_16')
     # a SPARSE stem: three loud hits in 48 s -> average level far below -50 dB, but real audio (must NOT be dropped)
     sp = np.zeros(n)
@@ -123,6 +127,8 @@ def main(work):
         names = [os.path.basename(f) for f in res['files'].values()]
         if not all(f' - PYREX MAGIK - ' in x and ('120bpm - ' + (want if not tr else 'Am→' + want)) in x for x in names):
             fails.append(f'names {names}')
+    if not any('Mixed sample rates' in x for x in an['notes']): fails.append('mixed sample rates not reported')
+    if len({sf.info(f).frames for f in res['files'].values()}) != 1: fails.append('stems not equal length')
     # every stem that was loaded comes out (silent and sparse ones too)
     if len(res['files']) != len(an['stems']):
         fails.append(f"rendered {len(res['files'])} of {len(an['stems'])} stems")

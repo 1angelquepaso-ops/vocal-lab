@@ -115,3 +115,10 @@ Engine options added: `--transpose` (same pass, `--formant` on vocals), `--nudge
 - **Sparse drums in the output check:** drift needs >= 8 hits per 12 s window; mansn has ~36 usable hits so the check read 999 and flagged grid. Now sparse drums are judged by the stretcher's own timing error (median <= 2 ms, p95 <= 10 ms).
 - **Stem list:** dropping adds to the list (12 max, no overwrite), each stem has an x, Clear empties it; changes re-read after ~0.75 s.
 - Tests: known-answer test now includes a sparse stem (-62 dB avg) and a vocal-only copy.
+
+## v1.2 fixes from the second FL test (Nov 19 2026)
+- **Mixed sample rates refused the whole batch:** a vocal re-exported from FL at 44.1 kHz / 32-bit float sat next to 48 kHz Suno stems. Same 203.0 s, but the check compared SAMPLE COUNTS. Lesson: compare stems in seconds (20 ms tolerance), resample each to the song's rate (most common) at render, one resample to the FL rate at the end. Real length mismatches are still refused, naming the stem and its length.
+- **Nothing starts on load:** dropping / removing stems only edits the list (12 max, x per chip, Clear). RENDER reads the song then renders in one go; it stops first if the engine has a question or the clock was only estimated (no drums).
+- **Visible progress:** live timer, step name and % in one big line; problems in red. On her N150 PC the analysis takes ~55 s (not 15-30 s as estimated), so a silent window looked frozen.
+- **STOP button + no freeze on close:** `EngineJob` used `stopThread(600000)` in its destructor, so closing the window mid-render blocked FL for minutes. Now `cancel()` kills the engine and `taskkill`s the Rubber Band helpers, and the destructor waits at most 5 s. A stopped render deletes its half-written WAVs.
+- Backend monitoring: the engine's session folders (`%TEMP%\PYREX MAGIK\s<ms>\`: progress.txt, analysis.json, render.json) are the only log; the window shows errors, there is no log file yet.

@@ -59,15 +59,21 @@ def plan(an, target_bpm, out_sr=44100, transpose=0, nudge_beats=0, lock=True):
     start = c['file_start_s'] + nudge_beats * 60.0 / src_bpm
     pad = int(round(-start * an['sr'])) if start < 0 else 0
     skip = int(round(start * an['sr'])) if start > 0 else 0
-    src_len = an['stems'][0]['frames'] + pad - skip
+    src_len = an.get('frames', an['stems'][0]['frames']) + pad - skip
     out_len = int(np.ceil(src_len / an['sr'] * ratio * out_sr))
     return dict(ratio=ratio, pad=pad, skip=skip, out_len=out_len, out_sr=out_sr, target_bpm=target_bpm,
-                src_bpm=src_bpm, start_s=start, transpose=int(transpose), nudge_beats=float(nudge_beats))
+                src_bpm=src_bpm, start_s=start, transpose=int(transpose), nudge_beats=float(nudge_beats),
+                sr=an['sr'], frames=an.get('frames', an['stems'][0]['frames']))
 
 
 def render_stem(path, P, dst, tmp, vocal=False):
     import soxr
     y, sr = sf.read(path, always_2d=True, dtype='float32')
+    if sr != P['sr']:                              # e.g. a 44.1 kHz export next to 48 kHz Suno stems
+        y = soxr.resample(y, sr, P['sr'], quality='VHQ').astype(np.float32)
+        sr = P['sr']
+    nf = P['frames']                               # every stem exactly the same length before stretching
+    y = y[:nf] if len(y) >= nf else np.concatenate([y, np.zeros((nf - len(y), y.shape[1]), np.float32)])
     if P['pad']:
         y = np.concatenate([np.zeros((P['pad'], y.shape[1]), np.float32), y])
     if P['skip']:
