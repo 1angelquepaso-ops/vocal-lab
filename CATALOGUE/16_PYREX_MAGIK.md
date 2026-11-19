@@ -84,9 +84,26 @@ Lessons
 - Delivery from Claude's workspace is capped (~30–55 MB worked) → test sets go out as 24-bit FLAC (−138 dB vs
   the float WAV). The plugin itself writes 32-bit float WAV locally.
 
+## Step 4 + 6: the plugin (Nov 18 2026, v1 = Global lock)
+`pyrex_plugin/` (JUCE 8.0.4, VST3 FX, stereo pass-through; reads FL BPM + sample rate from the playhead).
+Window 860×640: SONG (drop a Suno folder or its WAVs anywhere / Load stems, ÷2 ×2 + typed song BPM → re-analyse,
+key box = confirmed original key with the alternative shown, bar 1 time + ±1 beat nudge, clock badge with drift / feel,
+questions + notes in amber) · LOCK (BPM LOCK + target box "= FL", FL tempo/rate readout, KEY TRANSPOSE + target key
+in the same mode, semitone readout, RENDER, progress from `progress.txt`, result badge) · LOCKED STEMS (one drag grip
+per stem, off when red; Open folder; flagged sections as bar ranges).
+Exports: `Documents\PYREX MAGIK\<Song> - <bpm>bpm - <key>[ to <key>]\` — re-render replaces that folder's WAVs
+(one canonical set, no FINAL2 duplicates). Engine `Contents/Resources/engine/pyrex-engine.exe` + Rubber Band exe/dlls.
+Engine options added: `--transpose` (same pass, `--formant` on vocals), `--nudge`, `--no-lock`, `--key-name`.
+- Relative major/minor tie (Am–F–C–G read as C): the FIRST chord where the harmony starts decides (intros start
+  before the drums, so NOT the drums' bar 1). Real songs unchanged.
+- Multi-file drag kept OUT (playbook: dragging several files crashed FL); "Open folder" for selecting many in Explorer.
+- CI (`pyrex.yml`): known-answer test `packaging/pyrex_test.py` (117 BPM / Am / half-time / bar 1 ±4 ms / render
+  green, offset < 1 ms / transpose +3 → Cm / names) → PyInstaller → frozen smoke test (must be green) → VST3 → zip →
+  release `pyrex-latest`. Linux: Standalone screenshot-tested (load → analyse → render → drag tiles).
+
 ## Limits / next
 - Drift spans on Ódiame / Orange / mansn: grid snap should follow them; check in the render step (step 2–3).
 - Bar 1 still asks on 3 of 5 songs; a bass-note / chord-change vote is the next check.
 - Key: major/minor margin on Ódiame 0.08 (asks).
-- Build order: 1 analysis ✅ → 2 global render + checks ✅ → 3 grid snap + markers → 4 JUCE window + drag-out →
-  5 engine bake-off → 6 CI tests + release `pyrex-latest`.
+- Build order: 1 analysis ✅ → 2 global render + checks ✅ → 3 grid snap + markers → 4 JUCE window + drag-out ✅ →
+  5 engine bake-off → 6 CI tests + release `pyrex-latest` ✅ (pending first green run). Then step 3 (Grid snap).

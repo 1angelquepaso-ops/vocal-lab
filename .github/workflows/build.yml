@@ -10,7 +10,8 @@ on:
                    'dreammic_plugin/**', '.github/workflows/dreammic.yml',
                    'tito/**', 'tito_plugin/**', 'packaging/tito_main.py', 'packaging/tito_test.py',
                    '.github/workflows/tito.yml', '.github/workflows/tito-dataset.yml',
-                   'pyrex/**', 'pyrex_plugin/**', 'CATALOGUE/**']
+                   'pyrex/**', 'pyrex_plugin/**', 'CATALOGUE/**',
+                   'packaging/pyrex_main.py', 'packaging/pyrex_test.py', '.github/workflows/pyrex.yml']
   workflow_dispatch:
 
 permissions:

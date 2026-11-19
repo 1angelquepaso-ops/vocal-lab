@@ -74,6 +74,7 @@ def matched_hits(an, P, out_drums):
 def check_song(an, res, progress=None):
     import librosa
     from .analyze import clock_from, downbeat, grid_confidence, key_scores, load_mono
+    from .render import shift_key
     say = progress or (lambda f, m: None)
     P, files = res['plan'], res['files']
     out = dict(checks={}, level='green', problems=[])
@@ -98,7 +99,8 @@ def check_song(an, res, progress=None):
                                  on_grid_10ms=g['on_grid_10ms'], n=g['n'], flagged=g['bad'],
                                  stretcher_err_ms=dict(median=round(float(np.median(err)), 2),
                                                        p95=round(float(np.percentile(np.abs(err), 95)), 2)))
-    out['checks']['bar1'] = dict(ok=ph == 0, downbeat_beat=int(ph), style=style)
+    out['checks']['bar1'] = dict(ok=bool(ph == 0 or P.get('nudge_beats')), downbeat_beat=int(ph), style=style,
+                                 nudged=int(P.get('nudge_beats', 0)))
     # 4 pitch
     say(0.5, 'Checking pitch')
     pitch = {}
@@ -115,7 +117,7 @@ def check_song(an, res, progress=None):
         k0 = key_scores(librosa.feature.chroma_cqt(y=y0, sr=22050, hop_length=2048).sum(1))[0][1]
         k1 = key_scores(librosa.feature.chroma_cqt(y=y1, sr=22050, hop_length=2048).sum(1))[0][1]
         pitch[n] = dict(cents_before=round(t0, 1), cents_after=round(t1, 1), key_before=k0, key_after=k1,
-                        ok=k0 == k1 and ('bass' in n.lower() or abs(t1 - t0) <= 5))
+                        ok=k1 == shift_key(k0, P.get('transpose', 0)) and ('bass' in n.lower() or abs(t1 - t0) <= 5))
     out['checks']['pitch'] = dict(ok=all(v['ok'] for v in pitch.values()), stems=pitch)
     # 5 cross-stem alignment
     say(0.75, 'Checking stems line up')

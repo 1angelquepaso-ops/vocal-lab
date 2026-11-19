@@ -22,6 +22,10 @@ def main(argv=None):
     r_.add_argument('--bpm', type=float, required=True, help='FL project BPM')
     r_.add_argument('--sr', type=int, default=44100, help='FL project sample rate')
     r_.add_argument('--out-dir', required=True)
+    r_.add_argument('--transpose', type=int, default=0, help='semitones (Key Transpose switch)')
+    r_.add_argument('--nudge', type=int, default=0, help='move bar 1 by whole beats')
+    r_.add_argument('--no-lock', action='store_true', help='BPM Lock off: keep the song tempo')
+    r_.add_argument('--key-name', help='key the user confirmed (names + transpose)')
     r_.add_argument('--out', required=True)
     args = ap.parse_args(argv)
     if args.cmd == 'render':
@@ -68,8 +72,9 @@ def render_cmd(args):
             an = json.load(fh)
         if not an.get('ok'):
             raise ValueError(an.get('error') or 'analysis failed')
-        res = render_song(an, args.bpm, args.out_dir, out_sr=args.sr,
-                          progress=lambda f, m: say(0.85 * f, m))
+        res = render_song(an, args.bpm, args.out_dir, out_sr=args.sr, progress=lambda f, m: say(0.85 * f, m),
+                          transpose=args.transpose, nudge_beats=args.nudge, lock=not args.no_lock,
+                          key_name=args.key_name)
         say(0.88, 'Removing the stretcher delay')
         res = compensate(an, res)
         ck = check_song(an, res, progress=lambda f, m: say(0.9 + 0.09 * f, m))

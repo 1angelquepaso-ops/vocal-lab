@@ -36,19 +36,36 @@ def out_name(title, stem, bpm, key_from, key_to=None):
     return f'{safe(title)} - PYREX MAGIK - {safe(stem)} - {bpm:g}bpm - {safe(k)}.wav'
 
 
-def plan(an, target_bpm, out_sr=44100):
+NOTES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B']
+
+
+def shift_key(name, st):
+    if not name:
+        return name
+    minor = name.endswith('m')
+    root = name[:-1] if minor else name
+    if root not in NOTES:
+        return name
+    return NOTES[(NOTES.index(root) + int(st)) % 12] + ('m' if minor else '')
+
+
+def plan(an, target_bpm, out_sr=44100, transpose=0, nudge_beats=0, lock=True):
     c = an['clock']
-    ratio = c['bpm'] / target_bpm                 # output duration / input duration
-    start = c['file_start_s']                     # <= 0: bar line at or before the file start
+    src_bpm = c['bpm']
+    if not lock:                                  # BPM Lock off: keep the song's tempo
+        target_bpm = src_bpm
+    ratio = src_bpm / target_bpm                  # output duration / input duration
+    # <= 0: bar line at or before the file start; a nudge moves the "1" by whole beats
+    start = c['file_start_s'] + nudge_beats * 60.0 / src_bpm
     pad = int(round(-start * an['sr'])) if start < 0 else 0
     skip = int(round(start * an['sr'])) if start > 0 else 0
     src_len = an['stems'][0]['frames'] + pad - skip
     out_len = int(np.ceil(src_len / an['sr'] * ratio * out_sr))
     return dict(ratio=ratio, pad=pad, skip=skip, out_len=out_len, out_sr=out_sr, target_bpm=target_bpm,
-                src_bpm=c['bpm'], start_s=start)
+                src_bpm=src_bpm, start_s=start, transpose=int(transpose), nudge_beats=int(nudge_beats))
 
 
-def render_stem(path, P, dst, tmp):
+def render_stem(path, P, dst, tmp, vocal=False):
     import soxr
     y, sr = sf.read(path, always_2d=True, dtype='float32')
     if P['pad']:
@@ -58,10 +75,16 @@ def render_stem(path, P, dst, tmp):
     a = os.path.join(tmp, os.path.basename(dst) + '.in.wav')
     b = os.path.join(tmp, os.path.basename(dst) + '.out.wav')
     sf.write(a, y, sr, subtype='FLOAT')
-    if abs(P['ratio'] - 1) < 1e-9:
+    if abs(P['ratio'] - 1) < 1e-9 and not P['transpose']:
         shutil.copy(a, b)
     else:
-        cmd = [rubberband_exe(), '-3', '-q', '-t', f"{P['ratio']:.12f}", a, b]
+        # ONE pass: time ratio + (optional) pitch shift; voices keep their formants when transposed
+        cmd = [rubberband_exe(), '-3', '-q', '-t', f"{P['ratio']:.12f}"]
+        if P['transpose']:
+            cmd += ['-p', str(P['transpose'])]
+            if vocal:
+                cmd += ['--formant']
+        cmd += [a, b]
         subprocess.run(cmd, check=True, capture_output=True,
                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     z, _ = sf.read(b, always_2d=True, dtype='float32')
@@ -75,22 +98,27 @@ def render_stem(path, P, dst, tmp):
     return dst
 
 
-def render_song(an, target_bpm, out_dir, out_sr=44100, workers=4, progress=None):
+def render_song(an, target_bpm, out_dir, out_sr=44100, workers=None, progress=None, transpose=0,
+                nudge_beats=0, lock=True, key_name=None):
     say = progress or (lambda f, m: None)
-    P = plan(an, target_bpm, out_sr)
+    P = plan(an, target_bpm, out_sr, transpose, nudge_beats, lock)
+    target_bpm = P['target_bpm']
+    workers = workers or max(1, min(4, (os.cpu_count() or 2)))
     os.makedirs(out_dir, exist_ok=True)
     tmp = tempfile.mkdtemp(prefix='pyrex_r_')
-    key = (an.get('key') or {}).get('key') or 'key'
+    key = key_name or (an.get('key') or {}).get('key') or 'key'
+    key_to = shift_key(key, transpose) if transpose else None
+    P['key_from'], P['key_to'] = key, key_to
     jobs = []
     for s in an['stems']:
         if s.get('empty'):
             continue
-        dst = os.path.join(out_dir, out_name(an['title'], s['name'], round(target_bpm, 2), key))
-        jobs.append((s['name'], s['path'], dst))
+        dst = os.path.join(out_dir, out_name(an['title'], s['name'], round(target_bpm, 2), key, key_to))
+        jobs.append((s['name'], s['path'], dst, s.get('role') == 'vocal'))
     done = 0
     outs = {}
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = {ex.submit(render_stem, p, P, d, tmp): n for n, p, d in jobs}
+        futs = {ex.submit(render_stem, p, P, d, tmp, v): n for n, p, d, v in jobs}
         for f in futs:
             outs[futs[f]] = f.result()
             done += 1

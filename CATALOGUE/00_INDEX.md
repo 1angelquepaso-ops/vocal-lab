@@ -14,7 +14,7 @@ the data behind it, what we tested, and where each one goes next. Use it to rebu
 | 4 | **MIRRORWALL** | Vocal chain emulator: 8 stock chains fitted from our own old vocals + EMULATOR (reference acapella → new preset), autotune with key/scale, tweak knobs, mic match | v1 (offline) installed | `vocal-lab` (`mirrorwall/`, `mirrorwall_plugin/`) | `mirrorwall-latest` |
 | 5 | **DREAMMIC** | Real-time mic + preamp emulator: 19 vocal mics (+ their switches), 13 preamps, tracking comp (MIRRORWALL's fitted models) + de-esser, Auto input, Level match, presets, LIVE + HQ | v2 built (Nov 2026) | `vocal-lab` (`dreammic_plugin/`) | `dreammic-latest` |
 | 6 | **TITO PUENTE** | Drum stem → full-song MIDI on 16 MPC pads (one chop per sound, swap sounds, keep the composition), groove layers + real-drummer fills in 36 styles, drag MIDI | v1.1 (Nov 13 2026) | `vocal-lab` (`tito/`, `tito_plugin/`) | `tito-latest` |
-| 7 | **PYREX MAGIK** | Suno stems → one clock (drums) + one key → locked to FL BPM, pitch kept, drag locked WAVs | building: step 1 analysis engine done (Nov 18 2026) | `vocal-lab` (`pyrex/`) | `pyrex-latest` (not yet) |
+| 7 | **PYREX MAGIK** | Suno stems → one clock (drums) + one key → locked to FL BPM, pitch kept, drag locked WAVs | v1 (Global lock) built Nov 18 2026; Grid snap next | `vocal-lab` (`pyrex/`, `pyrex_plugin/`) | `pyrex-latest` |
 
 Install folder on Angel's PC: `C:\Program Files\Common Files\VST3\` → then FL: Options → Manage plugins → Find installed plugins.
 Audio material lives in `E:\EXTRACTION\IDEAS` (acapellas, raw vocals, stems).

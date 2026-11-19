@@ -1,0 +1,92 @@
+name: Build PYREX MAGIK
+
+on:
+  push:
+    branches: [main]
+    paths: ['pyrex/**', 'pyrex_plugin/**', 'packaging/pyrex_main.py', 'packaging/pyrex_test.py',
+            'tito/transcribe.py', 'tito/common.py', '.github/workflows/pyrex.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Engine dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy librosa soundfile soxr mido pyinstaller
+
+      - name: Rubber Band (time-stretch engine)
+        shell: pwsh
+        run: |
+          $u = "https://breakfastquay.com/files/releases/rubberband-3.3.0-gpl-executable-windows.zip"
+          Invoke-WebRequest $u -OutFile rb.zip
+          Expand-Archive rb.zip -DestinationPath rb
+          New-Item -ItemType Directory -Force rbbin | Out-Null
+          Get-ChildItem rb -Recurse -Include *.exe,*.dll | Copy-Item -Destination rbbin/
+          "RUBBERBAND=$PWD\rbbin\rubberband.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Known-answer test (117 BPM / A minor / half-time / bar 1 / render + transpose)
+        run: python packaging/pyrex_test.py pyrex_test
+
+      - name: Build engine (pyrex-engine.exe)
+        run: >
+          pyinstaller --noconfirm --onedir --console --name pyrex-engine
+          --paths . --collect-all librosa --collect-all soundfile --collect-all soxr
+          --hidden-import pyrex.cli --hidden-import pyrex.analyze --hidden-import pyrex.render --hidden-import pyrex.check
+          --hidden-import tito.transcribe --hidden-import tito.common
+          packaging/pyrex_main.py
+
+      - name: Put Rubber Band next to the engine
+        shell: pwsh
+        run: Copy-Item rbbin/* dist/pyrex-engine/
+
+      - name: Smoke-test the frozen engine
+        shell: pwsh
+        run: |
+          Remove-Item Env:RUBBERBAND
+          python packaging/pyrex_test.py --make-only smoke
+          $e = "dist/pyrex-engine/pyrex-engine.exe"
+          & $e analyze --folder "smoke/Test Song Stems (117BPM)" --out smoke/analysis.json
+          & $e render --analysis smoke/analysis.json --bpm 120 --sr 44100 --out-dir smoke/out --out smoke/render.json
+          $r = Get-Content smoke/render.json -Raw | ConvertFrom-Json
+          if (-not $r.ok) { throw "render failed: $($r.error)" }
+          if ($r.level -ne "green") { throw "render not green: $($r.problems)" }
+          Get-ChildItem smoke/out
+
+      - name: Build VST3
+        run: |
+          cmake -S pyrex_plugin -B build -A x64
+          cmake --build build --config Release --target PyrexMagik_VST3
+
+      - name: Package (engine + Rubber Band inside the plugin)
+        shell: pwsh
+        run: |
+          $vst = "build/PyrexMagik_artefacts/Release/VST3/PYREX MAGIK.vst3"
+          New-Item -ItemType Directory -Force "$vst/Contents/Resources/engine" | Out-Null
+          Copy-Item -Recurse dist/pyrex-engine/* "$vst/Contents/Resources/engine/"
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item -Recurse $vst out/
+          Compress-Archive -Path out/* -DestinationPath PYREX-MAGIK-Windows.zip -Force
+
+      - name: Publish download (Releases page)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: pyrex-latest
+          name: PYREX MAGIK (latest build)
+          body: |
+            Download **PYREX-MAGIK-Windows.zip**, unzip it, and copy the `PYREX MAGIK.vst3` folder into
+            `C:\Program Files\Common Files\VST3\`. Rescan plugins in FL Studio, then add it on any mixer insert
+            (it passes audio through untouched; it only reads FL's BPM). Drop one song's Suno stems on the window.
+            Time-stretch by Rubber Band (GPL, breakfastquay.com).
+          files: PYREX-MAGIK-Windows.zip
+          make_latest: false

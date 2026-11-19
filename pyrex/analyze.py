@@ -261,7 +261,12 @@ def key_scores(v):
     return out
 
 
-def key_analysis(stems):
+def _relative(k):
+    r = KEY_NAMES.index(k.rstrip('m'))
+    return KEY_NAMES[(r + 3) % 12] if k.endswith('m') else KEY_NAMES[(r + 9) % 12] + 'm'
+
+
+def key_analysis(stems, bar1_s=None, bar_s=None):
     """stems: list of (name, mono22, rms_db). Returns key, margin, tuning, per-window keys."""
     import librosa
     SR = 22050
@@ -296,6 +301,25 @@ def key_analysis(stems):
     tune = float(np.median(tv))
     tune_ok = (np.ptp(tv) <= 10) if len(tv) > 1 else True
     q = None
+    rel = _relative(k1) == k2
+    if rel and bar1_s is not None and bar_s:
+        # relative major / minor share every note: the chord on the "1" names the tonic
+        # the FIRST chord of the song: where the harmonic stems start sounding (intros often
+        # start before the drums), one bar long
+        e = sum(w * C.sum(axis=0) / (C.sum() + 1e-12) for w, C in chroma.values())
+        on = np.nonzero(e > 0.25 * np.median(e[e > 0]))[0] if (e > 0).any() else np.array([0])
+        a = int(on[0]) if len(on) else 0
+        b = max(a + 1, a + int(bar_s * SR / H))
+        v = sum(w * C[:, a:b].sum(axis=1) for w, C in chroma.values())
+        def triad(k):
+            r = KEY_NAMES.index(k.rstrip('m'))
+            third = 3 if k.endswith('m') else 4
+            return v[r] + v[(r + third) % 12] + v[(r + 7) % 12]
+        t1, t2 = triad(k1), triad(k2)
+        if t2 > 1.15 * t1:
+            k1, k2, s1, s2 = k2, k1, s2, s1
+        if max(t1, t2) > 1.15 * min(t1, t2):
+            margin = max(margin, KEY_MARGIN)          # decided by the bar-1 chord
     if margin < KEY_MARGIN:
         q = f'Key is {k1} or {k2} (too close to call). Which one?'
     return dict(key=k1, alt=k2, score=round(s1, 3), margin=round(margin, 3), question=q,
@@ -402,7 +426,7 @@ def analyze_song(paths, label=None, bpm_override=None, progress=None):
     if dconf < 0.4:
         questions.append(f'Bar 1 is a best guess ({style}). Check it lines up and nudge ±1 beat if not.')
     say(0.75, 'Reading the key')
-    key = key_analysis([(n, y, r) for n, (y, r) in mono.items()])
+    key = key_analysis([(n, y, r) for n, (y, r) in mono.items()], music_bar1, 4 * period)
     if key.get('question'):
         questions.append(key['question'])
     if key.get('key_change'):
