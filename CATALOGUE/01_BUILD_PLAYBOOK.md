@@ -68,6 +68,9 @@
 | PIRATA: 8th-triplet arp at 75 read as 112.5 | Same 3:2 trap as TITO: bass / chord changes must land on whole bars at the true tempo |
 | PIRATA: slow pad (1 chord / bar) read at a random tempo | Sparse attacks → take the harmonic rhythm as 4/4 bars |
 | Spectral "does this note explain energy" check on piano | Doesn't work: octave ghosts and real octaves share partials. Drums yes (TITO), piano no |
+| Clean Vocal v2: neural net run inside the audio callback → pops at low buffer | Real-time AI plugins: model on a worker thread, ring buffers, fixed reported delay; on underrun crossfade to delayed dry and skip the late samples; renders wait for the worker |
+| Clean Vocal v2: DeepFilterNet "gate" | Check a model's runtime thresholds: DF's min_db_thresh hard-mutes frames; DF also zeroes frames under ~−70 dBFS (dither them) |
+| Clean Vocal: cloning a model in reset() | reset() runs on transport start — never allocate or reload there |
 | Google Storage blocked in Claude's workspace | One-time GitHub workflow downloads + verifies the dataset and commits it |
 
 ## Parity rule (MIRRORWALL)

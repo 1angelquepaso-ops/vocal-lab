@@ -11,7 +11,7 @@
 ## Per plugin
 | Plugin | Next upgrades |
 |---|---|
-| Clean Vocal | skin; de-breath / de-click; learn-noise |
+| Clean Vocal | ~~live fixes: hard gate, pops at low buffer, modes LIVE/STANDARD/HQ/GENTLE, Release/Mix/Mono~~ (v3 done, Nov 19 2026); skin; de-breath / de-click; learn-noise; auto live margin |
 | Harmonizer | call & response + choir in UI; voice-clone voices instead of pitch-shifted; skin |
 | PIRATA | ~~Simple = melody line, Rich = melody + lush chords, grid phase fix~~ (v2 done); ~~Keep timing / triplet grids, exact BPM, 3:2 check, pad tempo, FL tempo warning~~ (v2.1 done, Nov 13 2026); run realbench on real loops; chord-name/bass accuracy on dense comping; tempo map for drifting loops (if the bench shows drift); .m4a input; optional stem separation; edit chords in the roll; skin |
 | MIRRORWALL | 2.0 live (above); capture-based stages (RVox, C-type comps, Avalon); paired-mode fitting UI; wider harmony stacks; preset share/export; skin |
