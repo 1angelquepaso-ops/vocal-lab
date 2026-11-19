@@ -9,7 +9,8 @@ on:
                    'packaging/make_mw_test.py', '.github/workflows/mirrorwall.yml',
                    'dreammic_plugin/**', '.github/workflows/dreammic.yml',
                    'tito/**', 'tito_plugin/**', 'packaging/tito_main.py', 'packaging/tito_test.py',
-                   '.github/workflows/tito.yml', '.github/workflows/tito-dataset.yml']
+                   '.github/workflows/tito.yml', '.github/workflows/tito-dataset.yml',
+                   'pyrex/**', 'pyrex_plugin/**', 'CATALOGUE/**']
   workflow_dispatch:
 
 permissions:
