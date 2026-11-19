@@ -107,3 +107,11 @@ Engine options added: `--transpose` (same pass, `--formant` on vocals), `--nudge
 - Key: major/minor margin on Ódiame 0.08 (asks).
 - Build order: 1 analysis ✅ → 2 global render + checks ✅ → 3 grid snap + markers → 4 JUCE window + drag-out ✅ →
   5 engine bake-off → 6 CI tests + release `pyrex-latest` ✅ (pending first green run). Then step 3 (Grid snap).
+
+## v1.1 fixes from the first FL test (Nov 19 2026)
+- **Stems silently dropped:** "empty" was judged by average level (-50 dB). Sparse stems (Percussion -51.8, Brass -49.7 dB avg on mansn, but real hits at -12 to -16 dB peak) were skipped, and "Other" (side-heavy stereo, mono sum quieter) too. Now empty = loudest sample below -70 dB, and EVERY loaded stem is rendered (a silent one stays silent). Lesson: judge silence by peak, never by average, and never drop a stem without telling the user.
+- **Target BPM:** defaults to the ORIGINAL song's tempo rounded to a whole number (not the FL tempo). "= FL" button copies FL's tempo; the window says "set FL to N". mansn 79 -> 79 (<1% stretch) instead of 130 (65%).
+- **Vocal-only / drum-less song:** used to fail with "No stem gave a usable clock". Now `clock_from_audio` estimates the pulse from note onsets (tempo from the typed BPM or the Suno label, refined +-1.5%; phase from onsets folded on one beat). Always flagged "approx", never green; checks skip the drum grid; render delay compensation uses the typical 1.46 ms. Bench (lead vocal vs drum grid, 3 songs): vocals read ~24.6-28.9 ms late -> `ONSET_LAG_S = 0.026` subtracted. Orange (syncopated vocal) came out half a beat off -> nudge now moves in half beats for drum-less songs.
+- **Sparse drums in the output check:** drift needs >= 8 hits per 12 s window; mansn has ~36 usable hits so the check read 999 and flagged grid. Now sparse drums are judged by the stretcher's own timing error (median <= 2 ms, p95 <= 10 ms).
+- **Stem list:** dropping adds to the list (12 max, no overwrite), each stem has an x, Clear empties it; changes re-read after ~0.75 s.
+- Tests: known-answer test now includes a sparse stem (-62 dB avg) and a vocal-only copy.

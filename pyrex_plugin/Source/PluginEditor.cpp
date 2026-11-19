@@ -174,7 +174,14 @@ PyrexEditor::PyrexEditor (PyrexProcessor& p) : AudioProcessorEditor (&p), proc (
         addAndMakeVisible (*e);
     }
     songBpmBox.setTextToShowWhenEmpty ("song BPM", dim);
-    targetBox.setTextToShowWhenEmpty ("= FL", dim);
+    targetBox.setTextToShowWhenEmpty ("auto", dim);
+    styleButton (flBtn, false);
+    addAndMakeVisible (flBtn);
+    styleButton (clearBtn, false);
+    addAndMakeVisible (clearBtn);
+    addAndMakeVisible (stemList);
+    stemList.onRemove = [this] (int i) { removeStem (i); };
+    clearBtn.onClick = [this] { clearStems(); };
 
     styleCombo (keyBox);
     styleCombo (toKeyBox);
@@ -240,12 +247,17 @@ PyrexEditor::PyrexEditor (PyrexProcessor& p) : AudioProcessorEditor (&p), proc (
         const double v = songBpmBox.getText().getDoubleValue();
         if (v >= 40 && v <= 300) { proc.bpmOverride = v; analyze(); }
     };
-    nudgeL.onClick = [this] { proc.nudge -= 1; settingsChanged(); };
-    nudgeR.onClick = [this] { proc.nudge += 1; settingsChanged(); };
+    nudgeL.onClick = [this] { proc.nudge -= nudgeStep(); settingsChanged(); };
+    nudgeR.onClick = [this] { proc.nudge += nudgeStep(); settingsChanged(); };
     lockBtn.onClick = [this] { proc.bpmLock = lockBtn.getToggleState(); settingsChanged(); };
     keyBtn.onClick = [this] { proc.keyTranspose = keyBtn.getToggleState(); settingsChanged(); };
     targetBox.onReturnKey = [this] { proc.targetBpm = targetBox.getText().getDoubleValue(); settingsChanged(); };
     targetBox.onFocusLost = [this] { proc.targetBpm = targetBox.getText().getDoubleValue(); settingsChanged(); };
+    flBtn.onClick = [this]
+    {
+        const double h = proc.hostBpm.load();
+        if (h >= 40 && h <= 300) { proc.targetBpm = h; settingsChanged(); }
+    };
     keyBox.onChange = [this]
     {
         proc.keyName = keyBox.getText();
@@ -265,7 +277,7 @@ PyrexEditor::PyrexEditor (PyrexProcessor& p) : AudioProcessorEditor (&p), proc (
     };
 
     setResizable (false, false);
-    setSize (860, 640);                // last (playbook: children must exist first)
+    setSize (860, 740);                // last (playbook: children must exist first)
     refresh();
     startTimerHz (8);
     // dev loop only (Linux screenshots / CI): PYREX_TEST_STEMS = folder -> load it on open
@@ -298,9 +310,20 @@ juce::File PyrexEditor::engineExe() const
     return {};
 }
 
+double PyrexEditor::nudgeStep() const
+{
+    return (proc.analysis.isObject() && (bool) proc.analysis["clock"]["approx"]) ? 0.5 : 1.0;
+}
+
 double PyrexEditor::targetBpmNow() const
 {
     if (proc.targetBpm >= 40 && proc.targetBpm <= 300) return proc.targetBpm;
+    // default: the ORIGINAL song's tempo, rounded to a whole BPM (never the FL tempo)
+    if (proc.analysis.isObject())
+    {
+        const double song = (double) proc.analysis["clock"]["bpm"];
+        if (song >= 40 && song <= 300) return std::round (song);
+    }
     const double h = proc.hostBpm.load();
     return h > 0 ? h : 120.0;
 }
@@ -383,24 +406,56 @@ void PyrexEditor::filesDropped (const juce::StringArray& files, int, int)
 
 void PyrexEditor::setStems (const juce::StringArray& files)
 {
-    if (busy) return;
-    juce::StringArray f;
+    const bool wasEmpty = proc.stems.isEmpty();
+    int added = 0, refused = 0;
     for (auto& x : files)
-        if (! juce::File (x).getFileName().containsIgnoreCase ("part_")) f.add (x);
-    f.sort (true);
-    if (f.size() > 12)
     {
-        proc.status = "That's " + juce::String (f.size()) + " files: drop ONE song's stems (12 max).";
-        refresh();
-        return;
+        if (juce::File (x).getFileName().containsIgnoreCase ("part_")) continue;   // Suno's partial exports
+        if (proc.stems.contains (x)) continue;                                    // already in the list
+        if (proc.stems.size() >= 12) { ++refused; continue; }
+        proc.stems.add (x);
+        ++added;
     }
-    proc.stems = f;
+    proc.stems.sort (true);
+    if (wasEmpty && added > 0)           // a fresh song: start from its own values
+    {
+        proc.bpmOverride = 0;
+        proc.nudge = 0;
+        proc.keyName = {};
+        proc.transpose = 0;
+        proc.targetBpm = 0;
+    }
+    if (added > 0) { proc.render = juce::var(); dirty = true; dirtyTicks = 4; proc.status = "Stems added, reading them again..."; }
+    if (refused > 0)
+        proc.status = "12 stems max: " + juce::String (refused) + " not added. Take one out with its x first.";
+    refresh();
+}
+
+void PyrexEditor::removeStem (int index)
+{
+    if (index < 0 || index >= proc.stems.size()) return;
+    proc.stems.remove (index);
+    proc.render = juce::var();
+    if (proc.stems.isEmpty()) { clearStems(); return; }
+    dirty = true;
+    dirtyTicks = 4;
+    proc.status = "Stem removed, reading the rest...";
+    refresh();
+}
+
+void PyrexEditor::clearStems()
+{
+    proc.stems.clear();
+    proc.analysis = juce::var();
+    proc.render = juce::var();
     proc.bpmOverride = 0;
     proc.nudge = 0;
     proc.keyName = {};
     proc.transpose = 0;
-    proc.render = juce::var();
-    analyze();
+    proc.targetBpm = 0;
+    dirty = false;
+    proc.status = "Drop a Suno stems folder or its WAVs onto this window.";
+    refresh();
 }
 
 void PyrexEditor::analyze()
@@ -417,6 +472,7 @@ void PyrexEditor::analyze()
     proc.status = "Reading the clock and the key...";
     runEngine (args, [this] (juce::var)
     {
+        if (dirty) return;               // the list changed while reading: the timer reads it again
         proc.analysis = juce::JSON::parse (proc.sessionDir.getChildFile ("analysis.json"));
         if (! proc.analysis.isObject() || ! proc.analysis["ok"])
         {
@@ -425,6 +481,7 @@ void PyrexEditor::analyze()
             return;
         }
         proc.keyName = proc.analysis["key"]["key"].toString();
+        if (proc.bpmOverride > 0) proc.targetBpm = 0;   // song BPM changed by hand: re-derive the target
         auto* q = proc.analysis["questions"].getArray();
         proc.status = (q != nullptr && ! q->isEmpty()) ? "Check the questions below, then RENDER." : "Ready: press RENDER.";
     });
@@ -455,7 +512,7 @@ void PyrexEditor::renderNow()
                              "--key-name", originalKey() };
     if (! proc.bpmLock) args.add ("--no-lock");
     if (proc.keyTranspose && proc.transpose != 0) args.addArray ({ "--transpose", juce::String (proc.transpose) });
-    if (proc.nudge != 0) args.addArray ({ "--nudge", juce::String (proc.nudge) });
+    if (proc.nudge != 0) args.addArray ({ "--nudge", juce::String (proc.nudge, 3) });
     proc.status = "Rendering " + juce::String (proc.stems.size()) + " stems...";
     runEngine (args, [this] (juce::var)
     {
@@ -496,21 +553,28 @@ void PyrexEditor::refresh()
     const bool has = a.isObject();
     statusLabel.setText (proc.status, juce::dontSendNotification);
     stemsLabel.setText (proc.stems.isEmpty() ? juce::String ("Drop a Suno stems folder or its WAVs anywhere on this window.")
-                                             : juce::String (proc.stems.size()) + " stems: " + [&]
-                                               {
-                                                   juce::StringArray n;
-                                                   for (auto& s : proc.stems) n.add (juce::File (s).getFileNameWithoutExtension());
-                                                   return n.joinIntoString (", ");
-                                               }(),
+                                             : juce::String (proc.stems.size()) + " of 12 stems   (drop more to add, x to remove)",
                         juce::dontSendNotification);
-    for (auto* c : std::initializer_list<juce::Component*> { &half, &dbl, &setBpm, &songBpmBox, &nudgeL, &nudgeR, &keyBox,
+    stemList.set (proc.stems, ! busy);
+    clearBtn.setEnabled (! proc.stems.isEmpty() && ! busy);
+    for (auto* c : std::initializer_list<juce::Component*> { &half, &dbl, &setBpm, &songBpmBox, &flBtn, &nudgeL, &nudgeR, &keyBox,
                                                              &renderBtn })
         c->setEnabled (has && ! busy);
     loadBtn.setEnabled (! busy);
     toKeyBox.setEnabled (has && ! busy && proc.keyTranspose);
-    hostLabel.setText ("FL tempo: " + (proc.hostBpm.load() > 0 ? fmtBpm (proc.hostBpm.load()) : juce::String ("-"))
-                           + "    rate: " + (proc.hostRate.load() > 0 ? juce::String ((int) proc.hostRate.load()) : juce::String ("-")),
-                       juce::dontSendNotification);
+    nudgeL.setButtonText (nudgeStep() < 1.0 ? "-1/2 beat" : "-1 beat");
+    nudgeR.setButtonText (nudgeStep() < 1.0 ? "+1/2 beat" : "+1 beat");
+    if (has && ! targetBox.hasKeyboardFocus (true))
+        targetBox.setText (fmtBpm (targetBpmNow()), false);
+    {
+        const double tgt = targetBpmNow(), host = proc.hostBpm.load();
+        const bool match = host > 0 && std::abs (host - tgt) < 0.01;
+        const juce::String rate = proc.hostRate.load() > 0 ? juce::String ((int) proc.hostRate.load()) : juce::String ("-");
+        hostLabel.setText (has ? "Locks to " + fmtBpm (tgt) + " BPM  |  FL is " + (host > 0 ? fmtBpm (host) : juce::String ("-"))
+                                     + (match ? " (matches)" : "  -> set FL to " + fmtBpm (tgt)) + "  |  " + rate + " Hz"
+                               : "FL tempo: " + (host > 0 ? fmtBpm (host) : juce::String ("-")) + "    rate: " + rate,
+                           juce::dontSendNotification);
+    }
 
     juce::StringArray notes;
     if (has)
@@ -531,10 +595,14 @@ void PyrexEditor::refresh()
 
         const double beat = 60.0 / bpm;
         bar1Label.setText ("Bar 1 of the music at " + mmss ((double) c["music_bar1_s"] + proc.nudge * beat) + "   ("
-                               + c["downbeat_style"].toString() + ")" + (proc.nudge != 0 ? "   nudged " + juce::String (proc.nudge) + " beat(s)" : ""),
+                               + c["downbeat_style"].toString() + ")" + (proc.nudge != 0 ? "   nudged " + juce::String (proc.nudge, 1) + " beat(s)" : ""),
                            juce::dontSendNotification);
         const auto& cf = c["conf"];
         const auto lvl = c["level"].toString();
+        if ((bool) c["approx"])
+            clockBadge.set (lvl, lvl == "red" ? "Clock: no clear pulse found" : "Clock: estimated (no drums)",
+                            "from " + c["source"].toString() + "  |  check the BPM, type it and press Set if it is off");
+        else
         clockBadge.set (lvl, lvl == "green" ? "Clock: locked tight" : lvl == "amber" ? "Clock: some sections drift" : "Clock: not reliable",
                         "source " + c["source"].toString() + "  |  drift " + juce::String ((double) cf["drift_ms"], 1) + " ms  |  feel "
                             + juce::String ((double) cf["feel_ms"], 1) + " ms (kept)  |  " + c["mode"].toString() + " lock");
@@ -603,6 +671,12 @@ void PyrexEditor::refresh()
 
 void PyrexEditor::timerCallback()
 {
+    if (dirty && ! busy && --dirtyTicks <= 0)
+    {
+        dirty = false;
+        analyze();
+    }
+
     static double lastHost = -1;
     if (busy && proc.sessionDir.isDirectory())
     {
@@ -628,7 +702,7 @@ void PyrexEditor::paint (juce::Graphics& g)
     g.fillAll (bg);
     auto b = getLocalBounds().reduced (12);
     b.removeFromTop (44);
-    auto top = b.removeFromTop (300);
+    auto top = b.removeFromTop (400);
     g.setColour (panel);
     g.fillRoundedRectangle (top.removeFromLeft (520).toFloat(), 8.0f);
     top.removeFromLeft (10);
@@ -648,6 +722,41 @@ void PyrexEditor::paint (juce::Graphics& g)
                 juce::Justification::centredRight);
 }
 
+juce::Rectangle<int> StemList::chipRect (int i) const
+{
+    const int perRow = juce::jmax (1, (getWidth() + gap) / (chipW + gap));
+    return { (i % perRow) * (chipW + gap), (i / perRow) * (chipH + gap), chipW, chipH };
+}
+
+void StemList::paint (juce::Graphics& g)
+{
+    for (int i = 0; i < names.size(); ++i)
+    {
+        auto r = chipRect (i);
+        g.setColour (panel2);
+        g.fillRoundedRectangle (r.toFloat(), 6.0f);
+        g.setColour (glass.withAlpha (0.45f));
+        g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 6.0f, 1.0f);
+        g.setColour (text);
+        g.setFont (juce::FontOptions (12.5f));
+        g.drawText (names[i], r.withTrimmedLeft (8).withTrimmedRight (24), juce::Justification::centredLeft, true);
+        auto x = r.removeFromRight (22);
+        g.setColour (removable ? accent : dim);
+        g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+        g.drawText ("x", x, juce::Justification::centred);
+    }
+}
+
+void StemList::mouseUp (const juce::MouseEvent& e)
+{
+    if (! removable || ! onRemove) return;
+    for (int i = 0; i < names.size(); ++i)
+    {
+        auto r = chipRect (i);
+        if (r.removeFromRight (24).contains (e.getPosition())) { onRemove (i); return; }
+    }
+}
+
 void PyrexEditor::resized()
 {
     if (title.getParentComponent() == nullptr) return;       // playbook: null-guard before children exist
@@ -664,7 +773,11 @@ void PyrexEditor::resized()
     auto row = L.removeFromTop (28);
     loadBtn.setBounds (row.removeFromLeft (120));
     row.removeFromLeft (8);
+    clearBtn.setBounds (row.removeFromLeft (64));
+    row.removeFromLeft (8);
     stemsLabel.setBounds (row);
+    L.removeFromTop (6);
+    stemList.setBounds (L.removeFromTop (108));
     L.removeFromTop (6);
     row = L.removeFromTop (26);
     bpmLabel.setBounds (row.removeFromLeft (290));
@@ -697,6 +810,7 @@ void PyrexEditor::resized()
     row.removeFromLeft (8);
     targetBox.setBounds (row.removeFromLeft (70));
     row.removeFromLeft (6);
+    flBtn.setBounds (row.removeFromLeft (56));
     hostLabel.setBounds (R.removeFromTop (22));
     R.removeFromTop (6);
     row = R.removeFromTop (30);

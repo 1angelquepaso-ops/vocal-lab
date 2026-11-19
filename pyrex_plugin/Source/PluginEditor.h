@@ -49,6 +49,28 @@ private:
     juce::String lvl, h, s;
 };
 
+// The loaded stems as chips: each shows the file name and an x to take it out of the batch.
+class StemList : public juce::Component
+{
+public:
+    std::function<void (int)> onRemove;
+    void set (const juce::StringArray& paths, bool allowRemove)
+    {
+        names.clear();
+        for (auto& p : paths) names.add (juce::File (p).getFileNameWithoutExtension());
+        removable = allowRemove;
+        repaint();
+    }
+    void paint (juce::Graphics&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+
+private:
+    juce::StringArray names;
+    bool removable = true;
+    static constexpr int chipW = 158, chipH = 24, gap = 6;
+    juce::Rectangle<int> chipRect (int i) const;
+};
+
 class PyrexEditor : public juce::AudioProcessorEditor,
                     public juce::FileDragAndDropTarget,
                     private juce::Timer
@@ -69,9 +91,12 @@ private:
     PyrexProcessor& proc;
 
     juce::TextButton loadBtn { "Load stems..." }, half { juce::CharPointer_UTF8 ("\xc3\xb7" "2") }, dbl { juce::CharPointer_UTF8 ("\xc3\x97" "2") },
-                     setBpm { "Set" }, nudgeL { "-1 beat" }, nudgeR { "+1 beat" },
+                     setBpm { "Set" }, clearBtn { "Clear" }, flBtn { "= FL" }, nudgeL { "-1 beat" }, nudgeR { "+1 beat" },
                      lockBtn { "BPM LOCK" }, keyBtn { "KEY TRANSPOSE" }, renderBtn { "RENDER" }, openBtn { "Open folder" };
     juce::TextEditor songBpmBox, targetBox;
+    StemList stemList;
+    bool dirty = false;
+    int dirtyTicks = 0;
     juce::ComboBox keyBox, toKeyBox;
     juce::Label title, stemsLabel, bpmLabel, keyLabel, bar1Label, hostLabel, shiftLabel, statusLabel, notesLabel, flagsLabel,
                 hSong, hLock, hOut;
@@ -87,11 +112,14 @@ private:
     juce::File engineExe() const;
     juce::File outputDir() const;
     void runEngine (juce::StringArray args, std::function<void (juce::var)> onOk);
-    void setStems (const juce::StringArray& files);
+    void setStems (const juce::StringArray& files);       // ADDS to the list (12 max), never replaces it
+    void removeStem (int index);
+    void clearStems();
     void analyze();
     void renderNow();
     void settingsChanged();
     double targetBpmNow() const;
+    double nudgeStep() const;
     juce::String originalKey() const;
     int shiftFor (const juce::String& from, const juce::String& to) const;
     void fillToKeys();

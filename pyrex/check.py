@@ -81,26 +81,36 @@ def check_song(an, res, progress=None):
     # 1 length
     lens = {n: sf.info(f).frames for n, f in files.items()}
     out['checks']['length'] = dict(ok=len(set(lens.values())) == 1, frames=sorted(set(lens.values())))
-    # 2 + 3 grid / bar 1 on the output drums
-    say(0.2, 'Re-reading the output drums')
+    approx = bool(an['clock'].get('approx'))
     dname = an['clock']['source']
-    dc = clock_from(files[dname])
-    period = 60 / P['target_bpm']
-    dur = lens[dname] / P['out_sr']
-    ideal = np.arange(0, dur + period, period)
-    mh, err = matched_hits(an, P, files[dname])
-    g = grid_confidence(mh, ideal)
-    ph, style, _ = downbeat(ideal, mh)
-    meas = dc['bpm']
-    bpm_ok = any(abs(meas * f / P['target_bpm'] - 1) < 0.002 for f in (1, 0.5, 2))
-    out['checks']['grid'] = dict(ok=bool(bpm_ok and g['drift_ms'] <= 10 and abs(g['offset_ms']) <= 3),
-                                 measured_bpm=meas, target_bpm=P['target_bpm'], offset_ms=g['offset_ms'],
-                                 drift_ms=g['drift_ms'], feel_ms=g['feel_ms'], median_ms=g['median_ms'],
-                                 on_grid_10ms=g['on_grid_10ms'], n=g['n'], flagged=g['bad'],
-                                 stretcher_err_ms=dict(median=round(float(np.median(err)), 2),
-                                                       p95=round(float(np.percentile(np.abs(err), 95)), 2)))
-    out['checks']['bar1'] = dict(ok=bool(ph == 0 or P.get('nudge_beats')), downbeat_beat=int(ph), style=style,
-                                 nudged=int(P.get('nudge_beats', 0)))
+    if approx:     # no drum hits to measure: the stretch itself is exact, but the grid was only estimated
+        out['checks']['grid'] = dict(ok=True, skipped=True, reason='no drums: grid was estimated, not measured')
+        out['checks']['bar1'] = dict(ok=True, skipped=True, nudged=float(P.get('nudge_beats', 0)))
+    else:
+        # 2 + 3 grid / bar 1 on the output drums
+        say(0.2, 'Re-reading the output drums')
+        dc = clock_from(files[dname])
+        period = 60 / P['target_bpm']
+        dur = lens[dname] / P['out_sr']
+        ideal = np.arange(0, dur + period, period)
+        mh, err = matched_hits(an, P, files[dname])
+        g = grid_confidence(mh, ideal)
+        ph, style, _ = downbeat(ideal, mh)
+        meas = dc['bpm']
+        bpm_ok = any(abs(meas * f / P['target_bpm'] - 1) < 0.002 for f in (1, 0.5, 2))
+        # sparse drums (< 8 hits in every 12 s window): drift cannot be judged, so the stretcher's own
+        # timing error on the hits that ARE there decides (median <= 2 ms, p95 <= 10 ms, bar lines on the grid)
+        sparse = g['drift_ms'] >= 999 and g['n'] >= 16
+        err_ok = float(np.median(np.abs(err))) <= 2.0 and float(np.percentile(np.abs(err), 95)) <= 10.0
+        drift_ok = (g['drift_ms'] <= 10) or (sparse and err_ok)
+        out['checks']['grid'] = dict(ok=bool(bpm_ok and drift_ok and abs(g['offset_ms']) <= 3), sparse_drums=bool(sparse),
+                                     measured_bpm=meas, target_bpm=P['target_bpm'], offset_ms=g['offset_ms'],
+                                     drift_ms=g['drift_ms'], feel_ms=g['feel_ms'], median_ms=g['median_ms'],
+                                     on_grid_10ms=g['on_grid_10ms'], n=g['n'], flagged=g['bad'],
+                                     stretcher_err_ms=dict(median=round(float(np.median(err)), 2),
+                                                           p95=round(float(np.percentile(np.abs(err), 95)), 2)))
+        out['checks']['bar1'] = dict(ok=bool(ph == 0 or P.get('nudge_beats')), downbeat_beat=int(ph), style=style,
+                                     nudged=float(P.get('nudge_beats', 0)))
     # 4 pitch
     say(0.5, 'Checking pitch')
     pitch = {}
@@ -125,7 +135,10 @@ def check_song(an, res, progress=None):
     for s in an['stems']:
         if s['name'] in files:
             offs[s['name']] = stem_offset_ms(s['path'], files[s['name']], P)
-    vals = [v for v in offs.values() if v is not None]
+    # quiet or sparse stems (percussion hits, a few brass notes) read noisily: they are rendered with the
+    # same time map and listed, but only clearly audible stems judge the alignment
+    solid = {s['name'] for s in an['stems'] if s.get('rms_db', 0) >= -50 and not s.get('empty')}
+    vals = [v for n, v in offs.items() if v is not None and n in solid]
     spread = (max(vals) - min(vals)) if vals else 0
     out['checks']['align'] = dict(ok=spread <= 1.0, offsets_ms=offs, spread_ms=round(spread, 2))
     # verdict
@@ -134,8 +147,8 @@ def check_song(an, res, progress=None):
             out['problems'].append(k)
     if 'length' in out['problems'] or 'align' in out['problems'] or 'pitch' in out['problems']:
         out['level'] = 'red'
-    elif out['problems']:
-        out['level'] = 'amber'
+    elif out['problems'] or approx:
+        out['level'] = 'amber'          # an estimated (drum-less) grid is never reported green
     return _plain(out)
 
 

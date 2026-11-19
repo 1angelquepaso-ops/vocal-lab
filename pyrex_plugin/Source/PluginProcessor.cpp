@@ -59,7 +59,7 @@ void PyrexProcessor::setStateInformation (const void* data, int size)
     keyTranspose = st.getProperty ("keyTranspose", false);
     keyName = st["keyName"].toString();
     transpose = st.getProperty ("transpose", 0);
-    nudge = st.getProperty ("nudge", 0);
+    nudge = (double) st.getProperty ("nudge", 0.0);
     if (analysis.isObject()) status = "Restored " + analysis["title"].toString() + ".";
 }
 

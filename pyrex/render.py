@@ -55,14 +55,14 @@ def plan(an, target_bpm, out_sr=44100, transpose=0, nudge_beats=0, lock=True):
     if not lock:                                  # BPM Lock off: keep the song's tempo
         target_bpm = src_bpm
     ratio = src_bpm / target_bpm                  # output duration / input duration
-    # <= 0: bar line at or before the file start; a nudge moves the "1" by whole beats
+    # <= 0: bar line at or before the file start; a nudge moves the "1" by whole beats (half beats for a drum-less song)
     start = c['file_start_s'] + nudge_beats * 60.0 / src_bpm
     pad = int(round(-start * an['sr'])) if start < 0 else 0
     skip = int(round(start * an['sr'])) if start > 0 else 0
     src_len = an['stems'][0]['frames'] + pad - skip
     out_len = int(np.ceil(src_len / an['sr'] * ratio * out_sr))
     return dict(ratio=ratio, pad=pad, skip=skip, out_len=out_len, out_sr=out_sr, target_bpm=target_bpm,
-                src_bpm=src_bpm, start_s=start, transpose=int(transpose), nudge_beats=int(nudge_beats))
+                src_bpm=src_bpm, start_s=start, transpose=int(transpose), nudge_beats=float(nudge_beats))
 
 
 def render_stem(path, P, dst, tmp, vocal=False):
@@ -115,8 +115,7 @@ def render_song(an, target_bpm, out_dir, out_sr=44100, workers=None, progress=No
     P['key_from'], P['key_to'] = key, key_to
     jobs = []
     for s in an['stems']:
-        if s.get('empty'):
-            continue
+        # every stem the user loaded is rendered, quiet or not: a silent stem just stays silent
         dst = os.path.join(out_dir, out_name(an['title'], s['name'], round(target_bpm, 2), key, key_to))
         jobs.append((s['name'], s['path'], dst, s.get('role') == 'vocal'))
     done = 0
@@ -137,8 +136,11 @@ def compensate(an, res, max_ms=10.0):
     hits land on the FL lines and the stems stay locked to each other. Length unchanged."""
     from .check import matched_hits
     P, files = res['plan'], res['files']
-    _, err = matched_hits(an, P, files[an['clock']['source']])
-    e = float(np.median(err))
+    if an['clock'].get('approx'):
+        e = 1.46                      # no drum hits to measure: Rubber Band R3's typical delay (bench: 1.3-2.7 ms)
+    else:
+        _, err = matched_hits(an, P, files[an['clock']['source']])
+        e = float(np.median(err))
     n = int(round(e / 1000 * P['out_sr']))
     if abs(e) < 0.3 or abs(e) > max_ms or n == 0:
         res['latency_ms'] = round(e, 2)

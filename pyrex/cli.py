@@ -23,7 +23,7 @@ def main(argv=None):
     r_.add_argument('--sr', type=int, default=44100, help='FL project sample rate')
     r_.add_argument('--out-dir', required=True)
     r_.add_argument('--transpose', type=int, default=0, help='semitones (Key Transpose switch)')
-    r_.add_argument('--nudge', type=int, default=0, help='move bar 1 by whole beats')
+    r_.add_argument('--nudge', type=float, default=0, help='move bar 1 by whole beats')
     r_.add_argument('--no-lock', action='store_true', help='BPM Lock off: keep the song tempo')
     r_.add_argument('--key-name', help='key the user confirmed (names + transpose)')
     r_.add_argument('--out', required=True)

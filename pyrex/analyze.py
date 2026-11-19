@@ -30,7 +30,9 @@ ROLES = {
 KEY_WEIGHT = {'keyboard': 1.0, 'piano': 1.0, 'synth': 0.9, 'guitar': 0.9, 'strings': 0.8, 'bass': 0.8,
               'brass': 0.6, 'woodwinds': 0.6, 'lead vocals': 0.6, 'backing vocals': 0.5, 'vocals': 0.6}
 
-QUIET_DB = -50.0          # a stem this quiet (RMS) is treated as empty
+QUIET_DB = -50.0          # a stem this quiet (mono RMS) does not vote for the key
+ONSET_LAG_S = 0.026      # drum-less clock: note-onset detector lag behind the true beat
+EMPTY_PEAK_DB = -70.0     # only a stem whose LOUDEST sample is this low counts as empty (sparse stems are real)
 LABEL_TOL = 0.005         # Suno label vs measured: 0.5 %
 KEY_MARGIN = 0.10         # top-2 key scores closer than this -> ask
 TUNE_MIN_CENTS = 10.0     # tuning correction only past this, and only if stems agree
@@ -84,12 +86,15 @@ def precheck(paths):
     return info, problems
 
 
-def load_mono(path, sr_out=22050):
+def load_mono(path, sr_out=22050, with_peak=False):
     import soxr
     y, sr = sf.read(path, always_2d=True, dtype='float32')
     m = y.mean(axis=1)
     rms = 20 * np.log10(np.sqrt(np.mean(m ** 2)) + 1e-12)
-    return soxr.resample(m, sr, sr_out).astype(np.float32), float(rms)
+    out = soxr.resample(m, sr, sr_out).astype(np.float32)
+    if with_peak:                      # peak over BOTH channels: side-only content must not read as silence
+        return out, float(rms), float(20 * np.log10(np.abs(y).max() + 1e-12))
+    return out, float(rms)
 
 
 # ------------------------------------------------------------------ clock
@@ -166,6 +171,54 @@ def clock_from(path, bpm_hint=None):
     hits = [dict(t=h['t'], vel=h['vel'], key=PADS[h['pad']][0]) for h in r['hits']]
     return dict(bpm=float(r['bpm']), steady=bool(r['steady']), beats=list(r['beats']), t0=float(r['t0']),
                 period=float(r['period']), hits=hits, n_hits=len(hits), conf=grid_confidence(hits, r['beats']))
+
+
+def clock_from_audio(path, bpm_hint=None, user_bpm=False):
+    """Clock for a song with NO drums (an a cappella, a lone vocal, pads only): the pulse is
+    estimated from where the notes and syllables start. Slower to trust than drum hits, so the
+    result is always flagged 'approx' and never green.
+    The tempo comes from the user / Suno label when given (refined within +-1.5 %, or not at
+    all for a typed BPM); the phase is where note onsets pile up when time is folded on one beat."""
+    import librosa
+    y, _ = load_mono(path)
+    sr, hop = 22050, 128
+    env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop).astype(float)
+    env = np.maximum(env - np.median(env), 0)
+    fps = sr / hop
+    times = np.arange(len(env)) / fps
+    if bpm_hint:
+        t0b = float(bpm_hint)
+    else:
+        t0b = float(librosa.feature.tempo(onset_envelope=env, sr=sr, hop_length=hop, start_bpm=100.0)[0])
+        while t0b < 70:
+            t0b *= 2
+        while t0b > 170:
+            t0b /= 2
+    span = 0.0 if user_bpm else 0.015
+    grid = np.linspace(t0b * (1 - span), t0b * (1 + span), 1 if span == 0 else 121)
+    nb = 120
+    best = None
+    for b in grid:
+        per = 60.0 / b
+        ph = (times % per) / per
+        h = np.bincount(np.minimum((ph * nb).astype(int), nb - 1), weights=env, minlength=nb)
+        hs = h + 0.5 * (np.roll(h, 1) + np.roll(h, -1))          # circular smoothing
+        sc = hs.max() / (hs.mean() + 1e-12)
+        if best is None or sc > best[0]:
+            best = (sc, b, per, hs)
+    strength, bpm, per, hs = best
+    k = int(np.argmax(hs))
+    a_, b_, c_ = hs[(k - 1) % nb], hs[k], hs[(k + 1) % nb]
+    frac = 0.5 * (a_ - c_) / (a_ - 2 * b_ + c_) if (a_ - 2 * b_ + c_) != 0 else 0.0
+    t0 = ((k + 0.5 + frac) / nb) * per - ONSET_LAG_S      # onsets read ~26 ms after the beat (bench: 24.6-28.9 ms, 3 songs)
+    dur = len(y) / sr
+    beats = list(np.arange(t0, dur + per, per))
+    on = np.where(env > 0.25 * np.percentile(env, 99))[0]
+    first_onset = float(times[on[0]]) if len(on) else 0.0
+    conf = dict(on_grid_10ms=0.0, median_ms=0.0, drift_ms=0.0, feel_ms=0.0, offset_ms=0.0, n=0, bad=[], approx=True,
+                strength=round(float(strength), 2))
+    return dict(bpm=float(bpm), steady=True, beats=beats, t0=float(t0), period=float(per), hits=[], n_hits=0,
+                conf=conf, approx=True, first_onset=first_onset, strength=float(strength))
 
 
 def downbeat(beats, hits):
@@ -342,9 +395,10 @@ def analyze_song(paths, label=None, bpm_override=None, progress=None):
     say(0.08, 'Loading stems')
     mono = {}
     for x in info:
-        y, rms = load_mono(x['path'])
+        y, rms, peak = load_mono(x['path'], with_peak=True)
         x['rms_db'] = round(rms, 1)
-        x['empty'] = rms < QUIET_DB
+        x['peak_db'] = round(peak, 1)
+        x['empty'] = peak < EMPTY_PEAK_DB
         mono[x['name']] = (y, rms)
     # clock: drums first, then percussion, then bass
     order = [x for r in ('clock', 'clock2') for x in info if x['role'] == r and not x['empty']]
@@ -369,7 +423,25 @@ def analyze_song(paths, label=None, bpm_override=None, progress=None):
             break
     questions, notes = [], []
     if clock is None:
-        return dict(ok=False, error='No stem gave a usable clock.', tried=tried, stems=info)
+        # no drums / percussion / bass that gave a clock (a cappella, vocal only, pads): estimate it
+        # from the loudest stems' note onsets instead of refusing the song
+        loud = sorted([x for x in info if not x['empty']], key=lambda x: -x['rms_db'])[:3]
+        for i, x in enumerate(loud):
+            say(0.2 + 0.1 * i, f'No drums found: estimating the pulse from {x["name"]}')
+            try:
+                c = clock_from_audio(x['path'], bpm_override or label, user_bpm=bool(bpm_override))
+            except Exception as e:                              # noqa: BLE001
+                tried.append(dict(stem=x['name'], error=str(e)))
+                continue
+            c['dur'] = dur
+            c['level'] = 'amber' if (c['strength'] >= 1.25 or bpm_override) else 'red'
+            tried.append(dict(stem=x['name'], bpm=c['bpm'], level=c['level'], strength=round(c['strength'], 2)))
+            if clock is None or c['strength'] > clock['strength']:
+                clock, src = c, x['name']
+        if clock is None:
+            return dict(ok=False, error='No stem gave a usable clock.', tried=tried, stems=info)
+        notes.append(f'No drum stem: the BPM and beat grid are estimated from {src}. Check them: type the real song '
+                     f'BPM and press Set if it is off, and nudge bar 1 by a beat if the downbeat is wrong.')
     measured = clock['bpm']
     if bpm_override:
         bpm, tag = float(bpm_override), 'user'
@@ -379,7 +451,13 @@ def analyze_song(paths, label=None, bpm_override=None, progress=None):
             (questions if tag == 'ratio_3_2' else notes).append(q)
     beats = np.asarray(clock['beats'], float)
     f = measured / bpm
-    if abs(f - 1) > 0.01 and not (abs(f - 2) < 0.02 or abs(f - 0.5) < 0.01):
+    if clock.get('approx') and abs(f - 1) > 0.01 and not (abs(f - 2) < 0.02 or abs(f - 0.5) < 0.01):
+        say(0.6, f'Re-reading the grid at {bpm:.2f} BPM')
+        c2 = clock_from_audio(next(x['path'] for x in info if x['name'] == src), bpm, user_bpm=True)
+        c2['dur'] = dur
+        c2['level'] = clock['level']
+        clock, beats = c2, np.asarray(c2['beats'], float)
+    elif abs(f - 1) > 0.01 and not (abs(f - 2) < 0.02 or abs(f - 0.5) < 0.01):
         # 3:2-type user choice: a different lattice -> re-read the clock at that tempo
         say(0.6, f'Re-reading the grid at {bpm:.2f} BPM')
         src_path = next(x['path'] for x in info if x['name'] == src)
@@ -393,16 +471,22 @@ def analyze_song(paths, label=None, bpm_override=None, progress=None):
         cands = [np.sort(np.concatenate([beats, (beats[:-1] + beats[1:]) / 2]))]
     best = None
     for bb in cands:
-        ph, style, dconf = downbeat(bb, clock['hits'])
-        conf = grid_confidence(clock['hits'], bb)
+        if clock.get('approx'):          # no drum hits: bar 1 = the beat at the first note, the user can nudge it
+            ph, style, dconf = int(np.argmin(np.abs(bb - clock['first_onset']))) % 4, 'estimated', 0.0
+            conf = clock['conf']
+        else:
+            ph, style, dconf = downbeat(bb, clock['hits'])
+            conf = grid_confidence(clock['hits'], bb)
         score = dconf - 0.001 * conf['drift_ms']
         if best is None or score > best[0]:
             best = (score, bb, ph, style, dconf, conf)
     _, beats, ph, style, dconf, conf = best
     clock['conf'] = conf
-    clock['level'] = confidence_level(conf, clock['steady'], dur)
+    if not clock.get('approx'):
+        clock['level'] = confidence_level(conf, clock['steady'], dur)
     # first downbeat at or before the first backbone hit = "music bar 1"
-    first_hit = min((h['t'] for h in clock['hits'] if h['key'] in CLOCK_PADS), default=beats[0])
+    first_hit = clock['first_onset'] if clock.get('approx') else min(
+        (h['t'] for h in clock['hits'] if h['key'] in CLOCK_PADS), default=beats[0])
     dbs = [i for i in range(len(beats)) if i % 4 == ph]
     i1 = max([i for i in dbs if beats[i] <= first_hit + 0.05], default=dbs[0])
     music_bar1 = float(beats[i1])
@@ -423,7 +507,7 @@ def analyze_song(paths, label=None, bpm_override=None, progress=None):
     tempos = [b for _, b in lt] or [bpm]
     if not clock['steady']:
         notes.append(f'Tempo drifts {min(tempos):.1f}-{max(tempos):.1f} BPM: Grid snap recommended.')
-    if dconf < 0.4:
+    if dconf < 0.4 and not clock.get('approx'):
         questions.append(f'Bar 1 is a best guess ({style}). Check it lines up and nudge ±1 beat if not.')
     say(0.75, 'Reading the key')
     key = key_analysis([(n, y, r) for n, (y, r) in mono.items()], music_bar1, 4 * period)
@@ -431,6 +515,9 @@ def analyze_song(paths, label=None, bpm_override=None, progress=None):
         questions.append(key['question'])
     if key.get('key_change'):
         notes.append('The key seems to change in parts of the song: check before transposing.')
+    quiet = [x['name'] for x in info if x['empty']]
+    if quiet:
+        notes.append('Silent stems (still rendered): ' + ', '.join(quiet))
     mode = 'global' if clock['steady'] else 'grid'
     level = clock['level']
     say(0.98, 'Done')
@@ -438,7 +525,7 @@ def analyze_song(paths, label=None, bpm_override=None, progress=None):
                 stems=[{k: v for k, v in x.items() if k != 'path'} | dict(path=x['path']) for x in info],
                 clock=dict(source=src, measured_bpm=round(measured, 3), bpm=round(bpm, 3),
                            display_bpm=int(round(bpm)), label_bpm=label, label_check=tag,
-                           steady=clock['steady'], mode=mode, level=level, conf=clock['conf'],
+                           steady=clock['steady'], mode=mode, level=level, conf=clock['conf'], approx=bool(clock.get('approx')),
                            music_bar1_s=round(music_bar1, 4), music_bar1_is_bar=bar_of_music1,
                 file_start_s=round(start_s, 4), pad_silence_s=round(max(0.0, -start_s), 4),
                 downbeat_style=style, downbeat_conf=dconf, phase_shift_ms=round(shift * 1000, 2), period=period,

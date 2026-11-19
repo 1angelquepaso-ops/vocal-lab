@@ -41,7 +41,7 @@ public:
     bool bpmLock = true, keyTranspose = false;
     juce::String keyName;              // the user's confirmed original key ("" = detected)
     int transpose = 0;                 // semitones (Key Transpose)
-    int nudge = 0;                     // bar 1 moved by whole beats
+    double nudge = 0.0;                // bar 1 moved in beats (whole; halves for a drum-less song)
     juce::String status { "Drop one song's Suno stems here (up to 12 WAVs)." };
 
 private:

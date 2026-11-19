@@ -77,6 +77,15 @@ def make(folder):
     sf.write(os.path.join(folder, '2 Drums.wav'), np.stack([drums, drums], 1) * 0.8, SR, subtype='PCM_16')
     sf.write(os.path.join(folder, '5 Keyboard.wav'), np.stack([keys, keys], 1), SR, subtype='PCM_16')
     sf.write(os.path.join(folder, '8 Other.wav'), np.zeros((n, 2)), SR, subtype='PCM_16')
+    # a SPARSE stem: three loud hits in 48 s -> average level far below -50 dB, but real audio (must NOT be dropped)
+    sp = np.zeros(n)
+    for t in (10.0, 20.0, 30.0):
+        place(sp, t, 0.02 * kick())
+    sf.write(os.path.join(folder, '6 Percussion.wav'), np.stack([sp, sp], 1), SR, subtype='PCM_16')
+    # a vocal-only copy of the song in its own folder (no drums at all)
+    vo = os.path.join(os.path.dirname(folder), 'Vocal Only Stems (117BPM)')
+    os.makedirs(vo, exist_ok=True)
+    sf.write(os.path.join(vo, '0 Lead Vocals.wav'), np.stack([voc, voc], 1), SR, subtype='PCM_16')
     return first_bar
 
 
@@ -98,6 +107,9 @@ def main(work):
     if abs(c['music_bar1_s'] - first_bar) > 0.004: fails.append(f"bar1 {c['music_bar1_s']}")
     if c['file_start_s'] > 0: fails.append('file start after 0 s')
     if not any(s['empty'] for s in an['stems']): fails.append('empty stem not detected')
+    sparse = next(x for x in an['stems'] if x['name'].lower() == 'percussion')
+    print('sparse stem', sparse['rms_db'], 'dB rms', sparse['peak_db'], 'dB peak, empty =', sparse['empty'])
+    if sparse["empty"] or sparse["rms_db"] > -50: fails.append(f"sparse stem misjudged {sparse['rms_db']} {sparse['empty']}")
     for tr, want in ((0, 'Am'), (3, 'Cm')):
         res = render_song(an, 120.0, os.path.join(work, f'out_{tr}'), transpose=tr)
         res = compensate(an, res)
@@ -111,6 +123,27 @@ def main(work):
         names = [os.path.basename(f) for f in res['files'].values()]
         if not all(f' - PYREX MAGIK - ' in x and ('120bpm - ' + (want if not tr else 'Am→' + want)) in x for x in names):
             fails.append(f'names {names}')
+    # every stem that was loaded comes out (silent and sparse ones too)
+    if len(res['files']) != len(an['stems']):
+        fails.append(f"rendered {len(res['files'])} of {len(an['stems'])} stems")
+    # vocal only: no drums -> estimated clock, never refused, never green
+    vp = [os.path.join(work, 'Vocal Only Stems (117BPM)', '0 Lead Vocals.wav')]
+    av = analyze_song(vp, label=117.0)
+    av['title'] = 'Vocal Only'
+    if not av.get('ok'):
+        fails.append(f"vocal-only refused: {av.get('error')}")
+    else:
+        cv = av['clock']
+        beats = np.array(cv['beats'])
+        ph = np.abs(((beats - first_bar) / P + 0.5) % 1 - 0.5) * P * 1000
+        print('vocal-only', cv['bpm'], cv['level'], 'approx', cv['approx'], 'phase error ms median %.1f' % np.median(ph))
+        if not cv['approx'] or cv['level'] == 'green': fails.append('vocal-only should be an amber estimate')
+        if abs(cv['bpm'] - BPM) > 0.6: fails.append(f"vocal-only bpm {cv['bpm']}")
+        if np.median(ph) > 40: fails.append(f"vocal-only phase {np.median(ph):.1f} ms")
+        rv = compensate(av, render_song(av, 120.0, os.path.join(work, 'out_voc')))
+        ckv = check_song(av, rv)
+        print('vocal-only render', ckv['level'], ckv['problems'])
+        if ckv['level'] == 'red': fails.append(f"vocal-only render {ckv['problems']}")
     if fails:
         print('FAILED:', fails)
         return 1
